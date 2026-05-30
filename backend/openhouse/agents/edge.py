@@ -30,13 +30,16 @@ from functools import lru_cache
 
 from pydantic import BaseModel, Field
 
+from ..data import operators as op_queries
 from ..data.adapters.base import AddressQuery
 from ..data.address import match_score, normalize_address
 from ..data.pio import PropertyIntelligenceObject, get_pio_builder
+from ..data.safety import NeighbourhoodSafety, safety_for
 from ..knowledge import tenant_rights
 from ..risk.report import RiskReport, Severity
 from ..risk.value import ValueForRisk, value_for_risk
 from .edge_runtime import EdgeRuntimeStatus, ModelCallSummary, get_model_adapter
+from .operator_resolver import resolve_operator
 from .schemas import AdvocacyReport, Concern, RightSummary, UserProfile
 from .service import HousingService, get_service
 
@@ -46,6 +49,13 @@ DEMO_ADDRESSES: tuple[dict[str, str], ...] = (
         "address": "500 Dawes Rd",
         "rsn": "4154044",
         "why": "High-risk demo with a declining score trend and open work orders.",
+    },
+    {
+        "label": "259 Sumach St",
+        "address": "259 Sumach St",
+        "rsn": "4167680",
+        "why": "Operator-portfolio demo: registered to 'TCH' — the model resolves it to "
+        "Toronto Community Housing and surfaces shared failures across its 260+ buildings.",
     },
     {
         "label": "1182 Queen St W",
@@ -133,11 +143,16 @@ class AddressResolution(BaseModel):
 
 class OperatorPortfolioReport(BaseModel):
     status: str
-    operator_name: str | None = None
+    operator_name: str | None = None  # raw spelling on file
+    operator_name_canonical: str | None = None  # resolved clean company name
     operator_source: str
     confidence: float
+    operator_reasoning: str = ""  # model's justification for the link (UI-visible)
+    n_portfolio: int = 0  # total buildings under the resolved operator
     repeated_patterns: list[str] = Field(default_factory=list)
     portfolio_buildings: list[dict[str, object]] = Field(default_factory=list)
+    pattern_summary: str = ""
+    pattern_citations: list[dict[str, object]] = Field(default_factory=list)
     portfolio_basis: str = ""
     uncertainty: str
     human_checkpoint: str | None = None
@@ -187,6 +202,7 @@ class EdgeInvestigationResponse(BaseModel):
     pio: PropertyIntelligenceObject | None = None
     risk: RiskReport | None = None
     value: ValueForRisk | None = None
+    safety: NeighbourhoodSafety | None = None
     operator: OperatorPortfolioReport
     rights: RightsGroundingReport
     advocacy: AdvocacyReport | None = None
@@ -364,14 +380,19 @@ class EdgeInvestigator:
                     f" · Value: {value.verdict} (~${value.condition_fair_rent:,} fair "
                     f"vs ~${value.market_rent:,} area-typical)."
                 )
+        safety = safety_for(risk.rsn) if risk else None
+        if safety and safety.available and trace.steps:
+            trace.steps[-1].output_summary += (
+                f" · Neighbourhood: {safety.neighbourhood} (safety {safety.safety_percentile}/100)."
+            )
         yield {"type": "agent_done", "index": 2, "step": trace.steps[-1],
-               "patch": {"risk": risk, "value": value, "evidence": list(evidence)}}
+               "patch": {"risk": risk, "value": value, "safety": safety, "evidence": list(evidence)}}
 
         # --- 4. Operator / Portfolio -------------------------------------
         yield self._start(3, delay)
         if delay:
             await asyncio.sleep(delay)
-        operator = self._operator_portfolio(risk, trace)
+        operator = await self._operator_portfolio(risk, trace)
         yield {"type": "agent_done", "index": 3, "step": trace.steps[-1],
                "patch": {"operator": operator}}
 
@@ -417,6 +438,7 @@ class EdgeInvestigator:
                 pio=pio,
                 risk=risk,
                 value=value,
+                safety=safety,
                 operator=operator,
                 rights=rights,
                 advocacy=advocacy,
@@ -644,84 +666,135 @@ class EdgeInvestigator:
     # ------------------------------------------------------------------
     # 4. Operator / Portfolio (honest ward context, never invents an operator)
     # ------------------------------------------------------------------
-    def _operator_portfolio(
+    async def _operator_portfolio(
         self, risk: RiskReport | None, trace: _Trace
     ) -> OperatorPortfolioReport:
         started = time.perf_counter()
-        report = self._operator_unavailable()
-        tool_calls = [
-            ToolCallSummary(
-                tool="RentSafeTO local schema inspection",
-                status="unavailable",
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                output_summary="Local RentSafeTO evaluation cache has no operator/manager field.",
+        if not risk or not risk.rsn:
+            report = self._operator_unavailable()
+            trace.add(
+                agent="Operator / Portfolio Agent",
+                action="Resolve the building operator and analyse its portfolio",
+                started=started, confidence=0.0,
+                human_checkpoint=report.human_checkpoint,
+                output_summary=report.uncertainty, status="needs_human",
             )
+            return report
+
+        operator_raw = op_queries.operator_raw_for(risk.rsn)
+
+        # No operator on file (~15%): honest, valid, no fabrication.
+        if not operator_raw:
+            report = self._operator_unavailable()
+            report.status = "no_registered_operator_on_file"
+            report.uncertainty = (
+                "No registered property-management company is on file for this building in the "
+                "City's Apartment Building Registration data, so it can't be linked to a portfolio "
+                "and no operator-level pattern can be analysed."
+            )
+            trace.add(
+                agent="Operator / Portfolio Agent",
+                action="Resolve the building operator and analyse its portfolio",
+                started=started,
+                tool_calls=[ToolCallSummary(
+                    tool="building_operators lookup", status="empty",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_summary="No registered operator on file for this RSN.")],
+                confidence=0.0, human_checkpoint=report.human_checkpoint,
+                output_summary="No registered operator on file — portfolio analysis unavailable.",
+                status="needs_human",
+            )
+            return report
+
+        # Resolve operator with the LOCAL model (the showpiece) + det. fallback.
+        resolved, model_call = await resolve_operator(operator_raw, self.model)
+        all_buildings = op_queries.buildings_by_operator_raws(resolved.members)
+        shared, failing_by_rsn = op_queries.portfolio_failures([b.rsn for b in all_buildings])
+        addr_by_rsn = {b.rsn: (b.address or "(address unknown)") for b in all_buildings}
+        canonical, n_total = resolved.canonical_name, len(all_buildings)
+
+        portfolio = [
+            {
+                "rsn": b.rsn, "address": addr_by_rsn[b.rsn], "score": b.score,
+                "shared_violations": sorted(failing_by_rsn.get(b.rsn, {})),
+            }
+            for b in all_buildings if b.rsn != risk.rsn
         ]
 
-        # Even without an operator field, we can give *honest* portfolio context:
-        # how this building sits among its geographic peers in the same ward.
-        # These are clearly labelled as ward peers, NOT confirmed same-operator.
-        if risk and risk.ward_name:
-            try:
-                stats = self.service.neighbourhood(risk.ward_name)
-                peers = self.service.worst(6, ward_name=risk.ward_name)
-                patterns: list[str] = []
-                n = stats.get("n_buildings")
-                hi = stats.get("n_high_risk")
-                avg = stats.get("avg_score")
-                if n and hi is not None:
-                    patterns.append(
-                        f"{hi} of {n} buildings in {risk.ward_name} score below 65 "
-                        "(City high-risk threshold)."
-                    )
-                if avg is not None and risk.overall_score is not None:
-                    delta = round(risk.overall_score - avg, 1)
-                    rel = "below" if delta < 0 else "above"
-                    patterns.append(
-                        f"Ward average City score is {avg}; this building is "
-                        f"{abs(delta)} points {rel} the ward average."
-                    )
-                report.repeated_patterns = patterns
-                report.portfolio_buildings = [
-                    {
-                        "rsn": b.rsn,
-                        "address": b.address,
-                        "score": b.score,
-                        "grade": b.grade,
-                        "is_subject": b.rsn == risk.rsn,
-                    }
-                    for b in peers
-                ]
-                report.portfolio_basis = (
-                    f"Lowest-scoring RentSafeTO buildings in {risk.ward_name}. These are "
-                    "geographic peers in the same ward — NOT confirmed to share an operator."
-                )
-                report.status = "operator_field_unavailable_ward_context_provided"
-                tool_calls.append(
-                    ToolCallSummary(
-                        tool="HousingService.neighbourhood + worst",
-                        status="ok",
-                        latency_ms=int((time.perf_counter() - started) * 1000),
-                        output_summary=(
-                            f"{len(report.portfolio_buildings)} ward peer(s); "
-                            f"{len(patterns)} factual pattern(s)."
-                        ),
-                    )
-                )
-            except Exception:  # noqa: BLE001 - context is best-effort, never fatal
-                pass
+        citations: list[dict[str, object]] = []
+        for f in shared:
+            hits = sorted(
+                ({"rsn": b.rsn, "address": addr_by_rsn[b.rsn], "category": f.category,
+                  "grade": failing_by_rsn[b.rsn][f.category]}
+                 for b in all_buildings if f.category in failing_by_rsn.get(b.rsn, {})),
+                key=lambda h: h["grade"],
+            )
+            for h in hits:
+                if len(citations) >= 40:
+                    break
+                citations.append(h)
+
+        if shared:
+            top = ", ".join(f"{f.category} ({f.buildings} buildings)" for f in shared[:3])
+            k = len(shared)
+            pattern_summary = (
+                f"Across {canonical}'s {n_total} building{'s' if n_total != 1 else ''} on file, "
+                f"{k} inspection categor{'ies are' if k != 1 else 'y is'} failed by 2 or more of "
+                f"them — led by {top}."
+            )
+            patterns = [
+                f"{canonical} operates {n_total} building(s) on file.",
+                f"{k} inspection categor{'ies are' if k != 1 else 'y is'} failed by 2+ of them.",
+            ]
+        else:
+            pattern_summary = (
+                f"{canonical} operates {n_total} building{'s' if n_total != 1 else ''} on file, but "
+                "no inspection category is failed by 2 or more of them — no shared pattern detected."
+            )
+            patterns = [f"{canonical} operates {n_total} building(s) on file."]
+
+        report = OperatorPortfolioReport(
+            status="operator_resolved",
+            operator_name=operator_raw,
+            operator_name_canonical=canonical,
+            operator_source="City of Toronto Apartment Building Registration (PROP_MANAGEMENT_COMPANY_NAME)",
+            confidence=resolved.confidence,
+            operator_reasoning=resolved.reasoning,
+            n_portfolio=n_total,
+            repeated_patterns=patterns,
+            portfolio_buildings=portfolio[:14],
+            pattern_summary=pattern_summary,
+            pattern_citations=citations,
+            portfolio_basis=(
+                f"Every building registered to {canonical} across {len(resolved.members)} raw "
+                "spelling(s) the resolver merged; shared failures are computed over the whole "
+                "portfolio's latest evaluations."
+            ),
+            uncertainty=(
+                "Operator links are resolved from messy public registration spellings; the model's "
+                "merge of acronyms/variants is shown for verification."
+            ),
+            human_checkpoint=(
+                "Verify the operator identity and the merged spellings before publishing any "
+                "operator-level claim; registration data can be stale or mis-keyed."
+            ),
+        )
 
         trace.add(
             agent="Operator / Portfolio Agent",
-            action="Identify operator and check repeated portfolio risk patterns",
+            action="Resolve the building operator and analyse its portfolio",
             started=started,
-            tool_calls=tool_calls,
-            confidence=report.confidence,
+            tool_calls=[ToolCallSummary(
+                tool="building_operators + portfolio_failures", status="ok",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                output_summary=f"{n_total} portfolio building(s); {len(shared)} shared-failure category(ies).")],
+            model_calls=[model_call] if model_call else [],
+            deterministic_fallback=bool(model_call and model_call.fallback_used),
+            confidence=resolved.confidence,
             human_checkpoint=report.human_checkpoint,
             output_summary=(
-                f"{len(report.repeated_patterns)} ward pattern(s); operator not in local cache."
-                if report.repeated_patterns
-                else report.uncertainty
+                f"Resolved '{operator_raw}' → {canonical} (conf {resolved.confidence:.2f}); "
+                f"{n_total} buildings, {len(shared)} shared failures."
             ),
             status="needs_human",
         )

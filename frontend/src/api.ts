@@ -94,6 +94,26 @@ export interface ValueForRisk {
   disclaimer: string;
 }
 
+export type SafetyBand = "safer" | "moderate" | "higher";
+export interface CrimeCategory {
+  category: string;
+  count: number;
+}
+export interface NeighbourhoodSafety {
+  available: boolean;
+  neighbourhood: string;
+  crimes_3y: number;
+  violent_3y: number;
+  property_3y: number;
+  per_year: number;
+  safety_percentile: number;
+  band: SafetyBand;
+  top_categories: CrimeCategory[];
+  summary: string;
+  basis: string;
+  disclaimer: string;
+}
+
 export interface Concern {
   title: string;
   why_it_matters: string;
@@ -273,17 +293,28 @@ export interface PortfolioBuilding {
   rsn: string;
   address: string;
   score: number | null;
-  grade: string | null;
-  is_subject: boolean;
+  shared_violations: string[];
+}
+
+export interface PatternCitation {
+  rsn: string;
+  address: string;
+  category: string;
+  grade: number;
 }
 
 export interface OperatorPortfolioReport {
   status: string;
   operator_name: string | null;
+  operator_name_canonical: string | null;
   operator_source: string;
   confidence: number;
+  operator_reasoning: string;
+  n_portfolio: number;
   repeated_patterns: string[];
   portfolio_buildings: PortfolioBuilding[];
+  pattern_summary: string;
+  pattern_citations: PatternCitation[];
   portfolio_basis: string;
   uncertainty: string;
   human_checkpoint: string | null;
@@ -359,6 +390,7 @@ export interface EdgeInvestigationResponse {
   pio: PIO | null;
   risk: RiskReport | null;
   value: ValueForRisk | null;
+  safety: NeighbourhoodSafety | null;
   operator: OperatorPortfolioReport;
   rights: RightsGroundingReport;
   advocacy: AdvocacyReport | null;
@@ -384,6 +416,7 @@ export interface PartialResult {
   pio?: PIO;
   risk?: RiskReport;
   value?: ValueForRisk;
+  safety?: NeighbourhoodSafety;
   operator?: OperatorPortfolioReport;
   rights?: RightsGroundingReport;
   advocacy?: AdvocacyReport;

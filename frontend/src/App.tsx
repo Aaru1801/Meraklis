@@ -66,7 +66,7 @@ export default function App() {
         setEvidence(ev.data.evidence);
         setData({
           resolved: ev.data.resolved, pio: ev.data.pio ?? undefined, risk: ev.data.risk ?? undefined,
-          value: ev.data.value ?? undefined,
+          value: ev.data.value ?? undefined, safety: ev.data.safety ?? undefined,
           operator: ev.data.operator, rights: ev.data.rights, advocacy: ev.data.advocacy ?? undefined,
           draft_311: ev.data.draft_311 ?? undefined, audit_trail: ev.data.audit_trail,
         });

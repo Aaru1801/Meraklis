@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type {
-  AddressResolution, AdvocacyReport, AuditStep, ComplaintDraft, OperatorPortfolioReport,
-  PIO, RightsGroundingReport, RiskReport, ValueForRisk,
+  AddressResolution, AdvocacyReport, AuditStep, ComplaintDraft, NeighbourhoodSafety,
+  OperatorPortfolioReport, PIO, RightsGroundingReport, RiskReport, ValueForRisk,
 } from "../api";
 import { Icon } from "../lib/icons";
 import {
@@ -374,62 +374,187 @@ export function Intelligence({ pio, risk, resolved }: { pio: PIO; risk: RiskRepo
 }
 
 /* ============ 4 · OPERATOR / PORTFOLIO ============ */
-export function OperatorPanel({ operator }: { operator: OperatorPortfolioReport }) {
-  const peers = operator.portfolio_buildings || [];
+const scoreCol = (s: number | null) => {
+  const v = s ?? 0;
+  return v < 65 ? "var(--r-high)" : v < 70 ? "var(--r-elev)" : v < 80 ? "var(--r-mod)" : "var(--green)";
+};
+
+export function OperatorPanel({ operator: o }: { operator: OperatorPortfolioReport }) {
+  const resolved = !!o.operator_name_canonical && o.status === "operator_resolved";
+  const peers = o.portfolio_buildings || [];
   return (
     <div style={SCROLL}>
       <div className="col" style={{ gap: 16 }}>
-        <SectionHeader icon="building-2" eyebrow="Operator / Portfolio" title="Operator Pattern" sub="Meraklis checks whether risks repeat across a portfolio — a single bad building is noise; a pattern is signal. It never invents an operator the data can't support." />
+        <SectionHeader icon="building-2" eyebrow="Operator / Portfolio · model-resolved" title="Operator Pattern"
+          sub="Who runs this building — and does the same failure repeat across every building they run? The public city site shows one building at a time; connecting them is the non-obvious insight."
+          right={resolved ? <Pill color="var(--green)"><Icon name="cpu" size={11} /> entity-resolved</Pill> : undefined} />
 
-        <Card>
-          <div className="row gap10" style={{ marginBottom: 4 }}>
-            <span style={{ width: 38, height: 38, borderRadius: 9, background: "var(--surface-3)", display: "grid", placeItems: "center", color: "var(--dim)" }}><Icon name="building-2" size={18} /></span>
-            <div className="grow">
-              <div style={{ fontSize: 15, fontWeight: 700 }}>{operator.operator_name ?? "Operator not in local RentSafeTO cache"}</div>
-              <div className="mono faint" style={{ fontSize: 11 }}>{operator.status.replace(/_/g, " ")}</div>
+        {!resolved ? (
+          <Card>
+            <div className="row gap10" style={{ marginBottom: 6 }}>
+              <span style={{ width: 38, height: 38, borderRadius: 9, background: "var(--surface-3)", display: "grid", placeItems: "center", color: "var(--dim)" }}><Icon name="building-2" size={18} /></span>
+              <div className="grow">
+                <div style={{ fontSize: 15, fontWeight: 700 }}>No registered operator on file</div>
+                <div className="mono faint" style={{ fontSize: 11 }}>{o.status.replace(/_/g, " ")}</div>
+              </div>
             </div>
+            <p className="dim" style={{ fontSize: 12.5, lineHeight: 1.5 }}>{o.uncertainty}</p>
+          </Card>
+        ) : (
+          <>
+            <Card>
+              <div className="row gap12" style={{ alignItems: "flex-start" }}>
+                <span style={{ width: 42, height: 42, borderRadius: 10, background: "var(--green-bg)", display: "grid", placeItems: "center", color: "var(--green)", flexShrink: 0 }}><Icon name="building-2" size={20} /></span>
+                <div className="grow">
+                  <div style={{ fontSize: 17, fontWeight: 800 }}>{o.operator_name_canonical}</div>
+                  <div className="mono faint" style={{ fontSize: 11 }}>registered as “{o.operator_name}” · {o.n_portfolio} building{o.n_portfolio !== 1 ? "s" : ""} on file</div>
+                </div>
+                <div className="col" style={{ alignItems: "flex-end", gap: 4 }}>
+                  <span className="eyebrow">link confidence</span>
+                  <div style={{ width: 90 }}><Meter value={o.confidence} max={1} color={o.confidence >= 0.75 ? "var(--green)" : o.confidence >= 0.5 ? "var(--r-mod)" : "var(--r-elev)"} /></div>
+                  <span className="mono" style={{ fontSize: 11, color: "var(--dim)" }}>{Math.round(o.confidence * 100)}%</span>
+                </div>
+              </div>
+              {o.operator_reasoning && (
+                <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
+                  <div className="row gap6" style={{ marginBottom: 4 }}><Icon name="cpu" size={12} color="var(--green)" /><span className="eyebrow">how the model linked it</span></div>
+                  <p style={{ fontSize: 12.5, lineHeight: 1.5 }}>{o.operator_reasoning}</p>
+                </div>
+              )}
+            </Card>
+
+            {o.pattern_summary && (
+              <Card style={{ borderColor: "color-mix(in oklch, var(--r-elev) 35%, var(--border))" }}>
+                <div className="row gap8" style={{ alignItems: "flex-start" }}>
+                  <Icon name="trending-down" size={16} color="var(--r-elev)" style={{ marginTop: 2 }} />
+                  <p style={{ fontSize: 14, lineHeight: 1.55, fontWeight: 600 }}>{o.pattern_summary}</p>
+                </div>
+              </Card>
+            )}
+
+            {peers.length > 0 && (
+              <Card pad={0}>
+                <div className="row" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", justifyContent: "space-between" }}>
+                  <span className="eyebrow">Portfolio buildings · shared failures</span>
+                  <span className="mono faint" style={{ fontSize: 10.5 }}>showing {peers.length} of {o.n_portfolio}</span>
+                </div>
+                <div className="col">
+                  {peers.map((b, i) => (
+                    <div key={b.rsn} className="row gap12" style={{ padding: "10px 16px", borderBottom: i < peers.length - 1 ? "1px solid var(--border)" : "none", alignItems: "flex-start" }}>
+                      <div className="grow col gap4" style={{ minWidth: 0 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 600 }}>{b.address}</span>
+                        {b.shared_violations.length > 0 && (
+                          <div className="row gap6 wrap">
+                            {b.shared_violations.slice(0, 4).map((v) => (
+                              <span key={v} className="pill" style={{ fontSize: 9.5, color: "var(--r-elev)", borderColor: "color-mix(in oklch, var(--r-elev) 40%, transparent)" }}>{v}</span>
+                            ))}
+                            {b.shared_violations.length > 4 && <span className="faint" style={{ fontSize: 10 }}>+{b.shared_violations.length - 4}</span>}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ width: 64, marginTop: 2 }}><Meter value={b.score ?? 0} max={100} color={scoreCol(b.score)} /></div>
+                      <span className="mono tabnum" style={{ fontSize: 12, fontWeight: 700, width: 30, textAlign: "right", color: scoreCol(b.score) }}>{b.score ?? "—"}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {o.pattern_citations.length > 0 && (
+              <Card>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Evidence · specific failed inspections ({o.pattern_citations.length})</div>
+                <div className="col gap6" style={{ maxHeight: 220, overflow: "auto" }}>
+                  {o.pattern_citations.map((c, i) => (
+                    <div key={i} className="row gap8" style={{ fontSize: 12 }}>
+                      <span className="mono" style={{ width: 14, color: c.grade === 0 ? "var(--r-high)" : "var(--r-elev)", fontWeight: 700 }}>{c.grade}</span>
+                      <span style={{ fontWeight: 600 }}>{c.category}</span>
+                      <span className="faint">·</span>
+                      <span className="dim grow" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.address}</span>
+                      {c.grade === 0 && <span className="mono" style={{ fontSize: 9.5, color: "var(--r-high)" }}>doc absent</span>}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </>
+        )}
+
+        {o.portfolio_basis && <p className="faint" style={{ fontSize: 11.5, fontStyle: "italic" }}>{o.portfolio_basis}</p>}
+        {o.human_checkpoint && <Banner icon="user-check" tone="warn" title="Human checkpoint">{o.human_checkpoint}</Banner>}
+      </div>
+    </div>
+  );
+}
+
+/* ============ · NEIGHBOURHOOD SAFETY ============ */
+const SAFETY_BAND: Record<string, { color: string; label: string }> = {
+  safer: { color: "var(--green)", label: "Safer area" },
+  moderate: { color: "var(--r-mod)", label: "Mid-city" },
+  higher: { color: "var(--r-high)", label: "Higher-crime area" },
+};
+
+export function SafetyPanel({ safety }: { safety: NeighbourhoodSafety }) {
+  const b = SAFETY_BAND[safety.band] ?? SAFETY_BAND.moderate;
+  if (!safety.available) {
+    return (
+      <div style={SCROLL}>
+        <SectionHeader icon="shield" eyebrow="Neighbourhood context" title="Neighbourhood Safety" sub="" />
+        <Card><p className="faint" style={{ fontSize: 13 }}>No neighbourhood-safety data is available for this building's location.</p></Card>
+      </div>
+    );
+  }
+  const maxCat = Math.max(1, ...safety.top_categories.map((c) => c.count));
+  return (
+    <div style={SCROLL}>
+      <div className="col" style={{ gap: 16 }}>
+        <SectionHeader icon="shield" eyebrow="Neighbourhood context · Toronto Police MCI" title="Neighbourhood Safety"
+          sub={safety.neighbourhood} right={<Pill color={b.color}>{b.label}</Pill>} />
+
+        <Card style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 26, alignItems: "center" }}>
+          <ScoreGauge value={safety.safety_percentile} color={b.color} size={140} sub="safety percentile" />
+          <div className="col gap12">
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: b.color }}>{b.label}</div>
+              <div className="mono faint" style={{ fontSize: 11 }}>higher percentile = fewer reported incidents vs. other Toronto neighbourhoods</div>
+            </div>
+            <p style={{ fontSize: 14, lineHeight: 1.55 }}>{safety.summary}</p>
           </div>
-          <p className="dim" style={{ fontSize: 12.5, lineHeight: 1.5, marginTop: 8 }}>{operator.uncertainty}</p>
         </Card>
 
         <div className="row gap16 wrap" style={{ alignItems: "stretch" }}>
-          {operator.repeated_patterns.length > 0 && (
-            <Card style={{ width: 360, flexShrink: 0 }}>
-              <div className="eyebrow" style={{ marginBottom: 12 }}>Repeated risk patterns · ward</div>
-              <div className="col gap10">
-                {operator.repeated_patterns.map((p, i) => (
-                  <div key={i} className="row gap8" style={{ alignItems: "flex-start" }}>
-                    <Icon name="trending-down" size={14} color="var(--r-elev)" style={{ marginTop: 1 }} />
-                    <span style={{ fontSize: 12.5, lineHeight: 1.45 }}>{p}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {peers.length > 0 && (
-            <Card className="grow" pad={0} style={{ minWidth: 320 }}>
-              <div className="row" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}><span className="eyebrow">Ward peers · RentSafeTO scores</span></div>
-              <div className="col">
-                {peers.map((b, i) => {
-                  const score = (b.score as number) ?? 0;
-                  const col = score < 65 ? "var(--r-high)" : score < 70 ? "var(--r-elev)" : score < 80 ? "var(--r-mod)" : "var(--green)";
-                  return (
-                    <div key={i} className="row gap12" style={{ padding: "10px 16px", borderBottom: i < peers.length - 1 ? "1px solid var(--border)" : "none", background: b.is_subject ? "var(--green-bg)" : "transparent" }}>
-                      {b.is_subject && <Icon name="crosshair" size={13} color="var(--green)" />}
-                      <span className="grow" style={{ fontSize: 12.5, fontWeight: b.is_subject ? 700 : 400, color: b.is_subject ? "var(--green)" : "var(--text)" }}>{b.address}{b.is_subject && <span className="mono" style={{ fontSize: 9.5, marginLeft: 6, color: "var(--green)" }}>· this building</span>}</span>
-                      <div style={{ width: 70 }}><Meter value={score} max={100} color={col} /></div>
-                      <span className="mono tabnum" style={{ fontSize: 12, fontWeight: 700, width: 34, textAlign: "right", color: col }}>{b.score ?? "—"}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-          )}
+          <Card className="grow" style={{ minWidth: 150 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Reported / year</div>
+            <div className="mono tabnum" style={{ fontSize: 24, fontWeight: 700 }}>{safety.per_year.toLocaleString()}</div>
+            <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>major crimes · 3-yr avg</div>
+          </Card>
+          <Card className="grow" style={{ minWidth: 150 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Violent</div>
+            <div className="mono tabnum" style={{ fontSize: 24, fontWeight: 700, color: "var(--r-high)" }}>{Math.round(safety.violent_3y / 3).toLocaleString()}<span className="faint" style={{ fontSize: 12, fontWeight: 500 }}>/yr</span></div>
+            <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>assault, robbery</div>
+          </Card>
+          <Card className="grow" style={{ minWidth: 150 }}>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Property</div>
+            <div className="mono tabnum" style={{ fontSize: 24, fontWeight: 700, color: "var(--r-elev)" }}>{Math.round(safety.property_3y / 3).toLocaleString()}<span className="faint" style={{ fontSize: 12, fontWeight: 500 }}>/yr</span></div>
+            <div className="faint" style={{ fontSize: 11, marginTop: 2 }}>break-in, auto theft, theft</div>
+          </Card>
         </div>
 
-        {operator.portfolio_basis && <p className="faint" style={{ fontSize: 11.5, fontStyle: "italic" }}>{operator.portfolio_basis}</p>}
-        {operator.human_checkpoint && <Banner icon="user-check" tone="warn" title="Human checkpoint">{operator.human_checkpoint}</Banner>}
+        {safety.top_categories.length > 0 && (
+          <Card>
+            <div className="eyebrow" style={{ marginBottom: 12 }}>Reported incidents by type · last 3 years</div>
+            <div className="col gap10">
+              {safety.top_categories.map((c) => (
+                <div key={c.category} className="row gap12" style={{ alignItems: "center" }}>
+                  <span style={{ width: 150, fontSize: 12.5 }}>{c.category}</span>
+                  <div className="grow"><Meter value={c.count} max={maxCat} color={b.color} /></div>
+                  <span className="mono tabnum" style={{ fontSize: 11, width: 54, textAlign: "right", color: "var(--dim)" }}>{c.count.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        <Banner icon="info" tone="legal">{safety.disclaimer} <span className="faint">{safety.basis}</span></Banner>
       </div>
     </div>
   );

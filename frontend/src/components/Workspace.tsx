@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type {
   AddressResolution, AdvocacyReport, AuditStep, ComplaintDraft, EdgeRuntimeStatus,
-  OperatorPortfolioReport, PIO, PipelineStage, RightsGroundingReport, RiskReport, ValueForRisk,
+  NeighbourhoodSafety, OperatorPortfolioReport, PIO, PipelineStage, RightsGroundingReport,
+  RiskReport, ValueForRisk,
 } from "../api";
 import { Icon } from "../lib/icons";
 import { gradeMeta, Logo } from "../lib/ui";
@@ -10,11 +11,12 @@ import { Trace } from "./Trace";
 import { RuntimePanel } from "./RuntimePanel";
 import {
   ReportOverview, RedFlags, Intelligence, OperatorPanel, RightsPanel, AdvocateSection,
-  DraftPanel, AuditPanel, ValuePanel,
+  DraftPanel, AuditPanel, ValuePanel, SafetyPanel,
 } from "./sections";
 
 export interface LiveData {
-  resolved?: AddressResolution; pio?: PIO; risk?: RiskReport; value?: ValueForRisk; operator?: OperatorPortfolioReport;
+  resolved?: AddressResolution; pio?: PIO; risk?: RiskReport; value?: ValueForRisk;
+  safety?: NeighbourhoodSafety; operator?: OperatorPortfolioReport;
   rights?: RightsGroundingReport; advocacy?: AdvocacyReport; draft_311?: ComplaintDraft; audit_trail: AuditStep[];
 }
 
@@ -77,6 +79,7 @@ export function Workspace({
       case "flags": return risk ? <RedFlags risk={risk} /> : <Waiting label="scoring risk…" />;
       case "pio": return data.pio && risk ? <Intelligence pio={data.pio} risk={risk} resolved={data.resolved} /> : <Waiting label="building PIO…" />;
       case "operator": return data.operator ? <OperatorPanel operator={data.operator} /> : <Waiting label="checking operator…" />;
+      case "safety": return data.safety ? <SafetyPanel safety={data.safety} /> : <Waiting label="reading neighbourhood safety…" />;
       case "rights": return data.rights ? <RightsPanel rights={data.rights} /> : <Waiting label="grounding rights…" />;
       case "advocate": return data.advocacy ? <AdvocateSection advocacy={data.advocacy} /> : <Waiting label="drafting guidance…" />;
       case "draft": return data.draft_311 ? <DraftPanel draft={data.draft_311} approval={approval} onApprove={() => setApproval("approved")} onRequestChanges={() => setApproval("pending")} /> : <Waiting label="preparing 311 draft…" />;

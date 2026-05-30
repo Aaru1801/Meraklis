@@ -25,6 +25,7 @@ export const NAV: NavItem[] = [
   { id: "flags", label: "Red Flags", icon: "flag" },
   { id: "pio", label: "Intelligence", icon: "boxes" },
   { id: "operator", label: "Operator", icon: "building-2" },
+  { id: "safety", label: "Neighbourhood", icon: "shield" },
   { id: "rights", label: "Rights", icon: "scale" },
   { id: "advocate", label: "Guidance", icon: "megaphone" },
   { id: "draft", label: "311 Draft", icon: "file-text" },
