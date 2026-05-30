@@ -1,0 +1,182 @@
+import { useCallback, useMemo, useState } from "react";
+import type { CityBuilding, EdgeRuntimeStatus } from "../api";
+import { Icon } from "../lib/icons";
+import { Logo, Pill } from "../lib/ui";
+import { CityModel, BAND_COLOR } from "./CityModel";
+import { MapView } from "./MapView";
+import { BASEMAP } from "../lib/basemap";
+import type { DemoCard } from "./SearchScreen";
+
+const PRESETS: { label: string; min: number }[] = [
+  { label: "All buildings", min: 0 },
+  { label: "Lower risk (75+)", min: 75 },
+  { label: "Lowest risk (85+)", min: 85 },
+];
+const LEGEND: { band: string; label: string }[] = [
+  { band: "Low", label: "Low" }, { band: "Moderate", label: "Moderate" },
+  { band: "Elevated", label: "Elevated" }, { band: "High", label: "High" }, { band: "Severe", label: "Severe" },
+];
+
+export function CityLanding({ buildings, demos, runtime, onPick }: {
+  buildings: CityBuilding[];
+  demos: DemoCard[];
+  runtime: EdgeRuntimeStatus | null;
+  onPick: (input: { address?: string; rsn?: string | null }) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [minScore, setMinScore] = useState(0);
+  const [includeUnknown, setIncludeUnknown] = useState(true);
+  const [hover, setHover] = useState<CityBuilding | null>(null);
+  const [view, setView] = useState<"map" | "3d">("map");
+
+  const demoRsns = useMemo(() => new Set(demos.map((d) => d.rsn)), [demos]);
+  const visibleCount = useMemo(
+    () => buildings.filter((b) => (b.score != null ? b.score >= minScore : includeUnknown)).length,
+    [buildings, minScore, includeUnknown],
+  );
+  // the single worst-scoring building city-wide — a data-driven shortcut
+  const mostSevere = useMemo(() => {
+    const scored = buildings.filter((b) => b.score != null);
+    return scored.length ? scored.reduce((a, b) => ((b.score as number) < (a.score as number) ? b : a)) : null;
+  }, [buildings]);
+
+  const onHover = useCallback((b: CityBuilding | null) => setHover((p) => (p?.rsn === b?.rsn ? p : b)), []);
+  const onPickBuilding = useCallback((b: CityBuilding) => onPick({ address: b.address, rsn: b.rsn }), [onPick]);
+
+  return (
+    <div style={{ position: "relative", height: "100%", overflow: "hidden", background: "#070a06" }}>
+      {/* map / 3d view — zIndex:0 contains Leaflet's internal z-indexes so the
+          overlays (which sit above) aren't covered by map panes/controls */}
+      <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+        {buildings.length === 0 ? (
+          <div className="col" style={{ height: "100%", placeItems: "center", justifyContent: "center", color: "var(--faint)", gap: 10 }}>
+            <Icon name="loader" size={26} className="spin" /><span className="mono" style={{ fontSize: 12 }}>loading the city…</span>
+          </div>
+        ) : view === "map" ? (
+          <MapView buildings={buildings} minScore={minScore} includeUnknown={includeUnknown} demoRsns={demoRsns} mostSevereRsn={mostSevere?.rsn ?? null} onPick={onPick} />
+        ) : (
+          <CityModel buildings={buildings} minScore={minScore} includeUnknown={includeUnknown} demoRsns={demoRsns} onPick={onPickBuilding} onHover={onHover} />
+        )}
+      </div>
+
+      {/* view toggle */}
+      <div className="panel row" style={{ position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)", padding: 3, gap: 2, background: "color-mix(in oklch, var(--surface) 88%, transparent)", backdropFilter: "blur(6px)" }}>
+        {([["map", "map", "Map"], ["3d", "box", "3D"]] as const).map(([v, ic, label]) => (
+          <button key={v} onClick={() => setView(v)} className="row gap6"
+            style={{ padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+              background: view === v ? "var(--green-bg)" : "transparent",
+              color: view === v ? "var(--green)" : "var(--dim)",
+              border: "1px solid " + (view === v ? "color-mix(in oklch, var(--green) 30%, transparent)" : "transparent") }}>
+            <Icon name={ic} size={13} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {/* top bar */}
+      <div className="row" style={{ position: "absolute", top: 0, left: 0, right: 0, justifyContent: "space-between", padding: "16px 22px", gap: 16, pointerEvents: "none" }}>
+        <div className="col gap8" style={{ pointerEvents: "auto" }}>
+          <Logo />
+          <div className="row gap8 wrap">
+            <Pill color="var(--green)"><Icon name="cpu" size={11} /> Your Agents · Your Models · Your Edge</Pill>
+          </div>
+        </div>
+        <div className="row gap10" style={{ pointerEvents: "auto" }}>
+          <span className="row gap6"><span className="dot dot-live" /><span className="mono" style={{ fontSize: 11, color: "var(--green)" }}>{runtime?.model_name ?? "local model"}</span></span>
+          <span className="faint">·</span>
+          <span className="mono faint" style={{ fontSize: 11 }}>{runtime?.gpu_hardware_mode ?? "NVIDIA Spark"}</span>
+        </div>
+      </div>
+
+      {/* search */}
+      <div style={{ position: "absolute", top: 84, left: "50%", transform: "translateX(-50%)", width: "min(560px, 86vw)" }}>
+        <div className="panel row gap10" style={{ padding: "5px 5px 5px 14px", borderColor: "var(--border-2)", background: "color-mix(in oklch, var(--surface) 88%, transparent)", backdropFilter: "blur(6px)" }}>
+          <Icon name="search" size={17} color="var(--faint)" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a Toronto building address…"
+            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) onPick({ address: q.trim() }); }}
+            style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 14, padding: "9px 0" }} />
+          <button className="btn btn-pri btn-sm" onClick={() => q.trim() && onPick({ address: q.trim() })}><Icon name="scan-search" size={14} /> Investigate</button>
+        </div>
+        <div className="row gap6 wrap" style={{ marginTop: 10, justifyContent: "center" }}>
+          {mostSevere && (
+            <button onClick={() => onPick({ address: mostSevere.address, rsn: mostSevere.rsn })} className="row gap6"
+              title={`Most severe city-wide: ${mostSevere.address} · City score ${mostSevere.score}`}
+              style={{ padding: "5px 11px", borderRadius: 99, border: "1px solid color-mix(in oklch, var(--r-high) 50%, transparent)", background: "color-mix(in oklch, var(--r-high) 15%, transparent)", fontSize: 11.5, fontWeight: 700, color: "var(--r-high)", backdropFilter: "blur(6px)" }}>
+              <Icon name="alert-triangle" size={11} /> Most severe
+            </button>
+          )}
+          {demos.map((d) => (
+            <button key={d.rsn} onClick={() => onPick({ address: d.address, rsn: d.rsn })} className="row gap6"
+              style={{ padding: "5px 10px", borderRadius: 99, border: "1px solid var(--border-2)", background: "color-mix(in oklch, var(--surface) 80%, transparent)", fontSize: 11.5, fontWeight: 600, color: "var(--dim)", backdropFilter: "blur(6px)" }}>
+              <span style={{ width: 7, height: 7, borderRadius: 99, background: "#8ed600" }} /> {d.address}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* filter panel */}
+      <div className="panel" style={{ position: "absolute", left: 22, bottom: 22, width: 290, padding: 16, background: "color-mix(in oklch, var(--surface) 90%, transparent)", backdropFilter: "blur(8px)" }}>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
+          <div className="row gap6"><Icon name="function-square" size={14} color="var(--green)" /><span style={{ fontSize: 13, fontWeight: 700 }}>Filter by risk</span></div>
+          <span className="mono faint" style={{ fontSize: 10.5 }}>{visibleCount.toLocaleString()} / {buildings.length.toLocaleString()}</span>
+        </div>
+        <div className="row gap8" style={{ marginBottom: 4 }}>
+          <span className="eyebrow">Min City score</span>
+          <span className="mono" style={{ fontSize: 11, color: minScore >= 85 ? "var(--green)" : minScore >= 75 ? "var(--r-mod)" : "var(--dim)", marginLeft: "auto" }}>{minScore === 0 ? "any" : minScore + "+"}</span>
+        </div>
+        <input type="range" min={0} max={100} value={minScore} onChange={(e) => setMinScore(+e.target.value)}
+          style={{ width: "100%", accentColor: "var(--green)" }} />
+        <div className="faint" style={{ fontSize: 10.5, marginTop: 2 }}>Higher City score = lower risk. Drag right to surface the safest buildings.</div>
+        <div className="row gap6 wrap" style={{ marginTop: 10 }}>
+          {PRESETS.map((p) => (
+            <button key={p.label} onClick={() => setMinScore(p.min)} className="mono"
+              style={{ fontSize: 10, padding: "5px 9px", borderRadius: 6, border: "1px solid " + (minScore === p.min ? "var(--green)" : "var(--border-2)"), color: minScore === p.min ? "var(--green)" : "var(--dim)", background: minScore === p.min ? "var(--green-bg)" : "transparent" }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ height: 1, background: "var(--border)", margin: "12px 0 10px" }} />
+        <div className="row gap10 wrap">
+          {LEGEND.map((l) => (
+            <span key={l.band} className="row gap6"><span style={{ width: 9, height: 9, borderRadius: 2, background: BAND_COLOR[l.band] }} /><span className="faint" style={{ fontSize: 10.5 }}>{l.label}</span></span>
+          ))}
+          <button onClick={() => setIncludeUnknown((v) => !v)} className="row gap6" title="Toggle buildings with no City score" style={{ opacity: includeUnknown ? 1 : 0.45 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: BAND_COLOR.Unknown }} /><span className="faint" style={{ fontSize: 10.5 }}>No score</span>
+          </button>
+        </div>
+      </div>
+
+      {/* hover card (3D only — the map uses Leaflet tooltips) */}
+      {view === "3d" && hover && (
+        <div className="panel" style={{ position: "absolute", right: 22, bottom: 22, width: 280, padding: 14, background: "color-mix(in oklch, var(--surface) 92%, transparent)", backdropFilter: "blur(8px)" }}>
+          <div className="row gap8" style={{ marginBottom: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: BAND_COLOR[hover.risk_level || "Unknown"], marginTop: 3, flexShrink: 0 }} />
+            <div className="grow">
+              <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.25 }}>{hover.address}</div>
+              <div className="faint" style={{ fontSize: 11 }}>{hover.ward ?? "Toronto"}</div>
+            </div>
+          </div>
+          <div className="row gap16" style={{ marginTop: 8 }}>
+            <div><div className="eyebrow">City score</div><div className="mono" style={{ fontSize: 16, fontWeight: 700, color: BAND_COLOR[hover.risk_level || "Unknown"] }}>{hover.score ?? "—"}</div></div>
+            <div><div className="eyebrow">Grade</div><div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>{hover.grade ?? "—"}</div></div>
+            <div><div className="eyebrow">Storeys</div><div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>{hover.storeys ?? "—"}</div></div>
+            <div><div className="eyebrow">Units</div><div className="mono" style={{ fontSize: 16, fontWeight: 700 }}>{hover.units ?? "—"}</div></div>
+          </div>
+          <button className="btn btn-pri btn-sm" style={{ width: "100%", justifyContent: "center", marginTop: 12 }} onClick={() => onPick({ address: hover.address, rsn: hover.rsn })}>
+            <Icon name="scan-search" size={13} /> Investigate this building
+          </button>
+        </div>
+      )}
+
+      {/* hint */}
+      <div className="mono" style={{ position: "absolute", bottom: 26, left: "50%", transform: "translateX(-50%)", fontSize: 10.5, color: "var(--ghost)", pointerEvents: "none" }}>
+        {view === "map" ? "drag to pan · scroll to zoom · click a building to investigate"
+          : "drag to orbit · scroll to zoom · click a building to investigate"}
+      </div>
+
+      {/* basemap attribution (OSM / CARTO terms) */}
+      <div className="mono" style={{ position: "absolute", bottom: 6, right: 12, fontSize: 9.5, color: "var(--ghost)", pointerEvents: "none" }}>
+        {BASEMAP.attribution} · buildings: City of Toronto RentSafeTO
+      </div>
+    </div>
+  );
+}

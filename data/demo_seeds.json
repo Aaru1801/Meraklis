@@ -1,0 +1,25 @@
+{
+  "name": "Meraklis — Spark demo seeds",
+  "note": "Real RSNs/addresses present in the local RentSafeTO SQLite cache. These seeds only pick which building to investigate; they never add, modify or invent any inspection facts. All scores and red flags come straight from the City of Toronto open dataset.",
+  "data_source": "City of Toronto Open Data — Apartment Building Evaluation (RentSafeTO)",
+  "addresses": [
+    {
+      "label": "500 Dawes Rd",
+      "address": "500 Dawes Rd",
+      "rsn": "4154044",
+      "why": "High/severe-risk demo with a declining score trend and open work orders."
+    },
+    {
+      "label": "1182 Queen St W",
+      "address": "1182 Queen St W",
+      "rsn": "4153146",
+      "why": "Newcomer-risk demo: Grade F, multiple critical evidence-backed deficiencies."
+    },
+    {
+      "label": "301 Lansdowne Ave",
+      "address": "301 Lansdowne Ave",
+      "rsn": "4153078",
+      "why": "Severe-risk demo for the human approval gate and 311 drafting."
+    }
+  ]
+}

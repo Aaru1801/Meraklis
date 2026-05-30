@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# SQLite write-ahead artifacts (the committed .sqlite3 is the source of truth)
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+
+# Optional local market-listing cache exports
+data/cache/
+
+# Heavy 3D Massing source download (the small extracted data/massing_cache.json is committed)
+data/_massing_src/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+.claude/

@@ -1,0 +1,60 @@
+import { useMemo } from "react";
+import { MapContainer, TileLayer, CircleMarker, Tooltip, ZoomControl } from "react-leaflet";
+import type { CityBuilding } from "../api";
+import { BAND_COLOR } from "./CityModel";
+
+// The OpenHome interactive map, brought into Meraklis: a zoomable / pannable dark
+// slippy map (CARTO dark_all — dark basemap *with* street names) and translucent
+// risk-coloured building markers. Buildings sit at their real lat/long.
+export function MapView({ buildings, minScore, includeUnknown, demoRsns, mostSevereRsn, onPick }: {
+  buildings: CityBuilding[];
+  minScore: number;
+  includeUnknown: boolean;
+  demoRsns: Set<string>;
+  mostSevereRsn: string | null;
+  onPick: (input: { address?: string; rsn?: string | null }) => void;
+}) {
+  const visible = useMemo(
+    () => buildings.filter((b) => b.lat != null && b.lng != null && (b.score != null ? b.score >= minScore : includeUnknown)),
+    [buildings, minScore, includeUnknown],
+  );
+  return (
+    <MapContainer
+      center={[43.70, -79.38]} zoom={11} minZoom={9} maxZoom={18}
+      preferCanvas zoomControl={false} attributionControl={false}
+      style={{ height: "100%", width: "100%", background: "#05070a" }}
+    >
+      <TileLayer
+        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+        subdomains="abcd" maxZoom={20}
+      />
+      <ZoomControl position="bottomright" />
+      {visible.map((b) => {
+        const col = BAND_COLOR[b.risk_level || "Unknown"] || BAND_COLOR.Unknown;
+        const isSevere = b.rsn === mostSevereRsn;
+        const emph = isSevere || demoRsns.has(b.rsn);
+        return (
+          <CircleMarker
+            key={b.rsn}
+            center={[b.lat as number, b.lng as number]}
+            radius={emph ? 8 : 5}
+            pathOptions={{
+              color: isSevere ? "#ffffff" : col,
+              fillColor: col,
+              fillOpacity: emph ? 0.8 : 0.45,
+              weight: emph ? 2 : 1,
+            }}
+            eventHandlers={{ click: () => onPick({ address: b.address, rsn: b.rsn }) }}
+          >
+            <Tooltip direction="top" offset={[0, -4]} opacity={1}>
+              <span style={{ fontWeight: 700 }}>{b.address}</span>
+              <br />
+              City score {b.score ?? "—"} · grade {b.grade ?? "—"} · {b.risk_level}
+              {isSevere && " · most severe city-wide"}
+            </Tooltip>
+          </CircleMarker>
+        );
+      })}
+    </MapContainer>
+  );
+}

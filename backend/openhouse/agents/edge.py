@@ -1,0 +1,1191 @@
+"""Meraklis — the local-first, NVIDIA Spark agent pipeline.
+
+Eight agents investigate a Toronto apartment building end to end:
+
+    1. Address Resolver   normalize input → match a RentSafeTO building
+    2. PIO Builder        fuse sources into a Property Intelligence Object
+    3. Risk Analyst       deterministic RentSafeTO risk engine (no LLM)
+    4. Operator/Portfolio identify operator + ward portfolio context (honest)
+    5. Rights Grounding   map issues → verified Ontario tenant-rights facts
+    6. Advocate           plain-language guidance (local model, det. fallback)
+    7. 311 Draft          complaint summary from cited evidence only
+    8. Audit              record every tool/model call, fallback & checkpoint
+
+The pipeline is an **async generator** (:meth:`EdgeInvestigator.run`) that emits
+one event per stage, so the UI can stream "the system thinking and acting" live.
+:meth:`EdgeInvestigator.investigate` drains the same generator for a one-shot
+batch response — a single source of truth. Deterministic scoring, rights
+grounding and 311 drafting all work offline; model calls are optional and fall
+back safely. Every generated claim is tied to a structured evidence ID.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import os
+import time
+from collections.abc import AsyncIterator
+from functools import lru_cache
+
+from pydantic import BaseModel, Field
+
+from ..data.adapters.base import AddressQuery
+from ..data.address import match_score, normalize_address
+from ..data.pio import PropertyIntelligenceObject, get_pio_builder
+from ..knowledge import tenant_rights
+from ..risk.report import RiskReport, Severity
+from ..risk.value import ValueForRisk, value_for_risk
+from .edge_runtime import EdgeRuntimeStatus, ModelCallSummary, get_model_adapter
+from .schemas import AdvocacyReport, Concern, RightSummary, UserProfile
+from .service import HousingService, get_service
+
+DEMO_ADDRESSES: tuple[dict[str, str], ...] = (
+    {
+        "label": "500 Dawes Rd",
+        "address": "500 Dawes Rd",
+        "rsn": "4154044",
+        "why": "High-risk demo with a declining score trend and open work orders.",
+    },
+    {
+        "label": "1182 Queen St W",
+        "address": "1182 Queen St W",
+        "rsn": "4153146",
+        "why": "Newcomer-risk demo with multiple evidence-backed deficiencies.",
+    },
+    {
+        "label": "301 Lansdowne Ave",
+        "address": "301 Lansdowne Ave",
+        "rsn": "4153078",
+        "why": "Severe-risk demo for human verification and 311 drafting.",
+    },
+)
+
+# Human-readable label for each pipeline stage (drives the live trace skeleton).
+PIPELINE_STAGES: tuple[tuple[str, str], ...] = (
+    ("Address Resolver Agent", "Resolving address"),
+    ("PIO Builder Agent", "Building Property Intelligence Object"),
+    ("Risk Analyst Agent", "Scoring deterministic risk"),
+    ("Operator / Portfolio Agent", "Checking operator & portfolio"),
+    ("Rights Grounding Agent", "Grounding tenant rights"),
+    ("Advocate Agent", "Drafting renter guidance"),
+    ("311 Draft Agent", "Preparing 311 draft"),
+    ("Audit Agent", "Writing audit trail"),
+)
+
+_RENTSAFETO_URL = "https://open.toronto.ca/dataset/apartment-building-evaluation/"
+
+
+# ---------------------------------------------------------------------------
+# Structured contracts
+# ---------------------------------------------------------------------------
+class EvidenceRef(BaseModel):
+    id: str
+    source: str
+    title: str
+    detail: str
+    confidence: float = 1.0
+    url: str | None = None
+
+
+class ToolCallSummary(BaseModel):
+    tool: str
+    status: str
+    latency_ms: int
+    output_summary: str = ""
+
+
+class AuditStep(BaseModel):
+    id: str
+    agent: str
+    action: str
+    status: str = "ok"
+    started_at: str
+    completed_at: str
+    latency_ms: int
+    tool_calls: list[ToolCallSummary] = Field(default_factory=list)
+    model_calls: list[ModelCallSummary] = Field(default_factory=list)
+    deterministic_fallback: bool = False
+    confidence: float = 1.0
+    citations: list[EvidenceRef] = Field(default_factory=list)
+    human_checkpoint: str | None = None
+    output_summary: str = ""
+
+
+class AddressCandidate(BaseModel):
+    rsn: str
+    address: str
+    ward_name: str | None = None
+    score: int | None = None
+    match_confidence: float
+
+
+class AddressResolution(BaseModel):
+    input: str = ""
+    normalized: str = ""
+    rsn: str | None = None
+    address: str | None = None
+    confidence: float = 0.0
+    status: str = "unresolved"
+    candidates: list[AddressCandidate] = Field(default_factory=list)
+    human_checkpoint: str | None = None
+
+
+class OperatorPortfolioReport(BaseModel):
+    status: str
+    operator_name: str | None = None
+    operator_source: str
+    confidence: float
+    repeated_patterns: list[str] = Field(default_factory=list)
+    portfolio_buildings: list[dict[str, object]] = Field(default_factory=list)
+    portfolio_basis: str = ""
+    uncertainty: str
+    human_checkpoint: str | None = None
+
+
+class RightsGroundingReport(BaseModel):
+    topics: list[str]
+    rights: list[dict[str, object]]
+    citations: list[EvidenceRef]
+    disclaimer: str
+
+
+class ComplaintDraft(BaseModel):
+    title: str
+    body: str
+    evidence_ids: list[str]
+    human_approval_required: bool = True
+    approval_gate: str
+    submit_status: str = "not_submitted"
+
+
+class AdvocateNarrativeOutput(BaseModel):
+    headline: str
+    bottom_line: str
+    what_this_means_for_you: str
+    cited_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ComplaintDraftOutput(BaseModel):
+    title: str
+    body: str
+    cited_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class EdgeInvestigationRequest(BaseModel):
+    address: str = ""
+    rsn: str | None = None
+    profile: UserProfile = Field(default_factory=UserProfile)
+    refresh_model: bool = False
+    asking_rent: int | None = None  # optional real asking rent → value-for-risk check
+
+
+class EdgeInvestigationResponse(BaseModel):
+    app_name: str = "Meraklis"
+    tagline: str = "Your agents. Your models. Your edge."
+    resolved: AddressResolution
+    pio: PropertyIntelligenceObject | None = None
+    risk: RiskReport | None = None
+    value: ValueForRisk | None = None
+    operator: OperatorPortfolioReport
+    rights: RightsGroundingReport
+    advocacy: AdvocacyReport | None = None
+    draft_311: ComplaintDraft | None = None
+    audit_trail: list[AuditStep]
+    runtime: EdgeRuntimeStatus
+    evidence: list[EvidenceRef]
+    demo_addresses: list[dict[str, str]]
+    meta: dict[str, object] = Field(default_factory=dict)
+
+
+class _Trace:
+    """Accumulates audit steps; ``last`` is the most recently recorded step."""
+
+    def __init__(self) -> None:
+        self.steps: list[AuditStep] = []
+
+    def add(
+        self,
+        *,
+        agent: str,
+        action: str,
+        started: float,
+        tool_calls: list[ToolCallSummary] | None = None,
+        model_calls: list[ModelCallSummary] | None = None,
+        deterministic_fallback: bool = False,
+        confidence: float = 1.0,
+        citations: list[EvidenceRef] | None = None,
+        human_checkpoint: str | None = None,
+        output_summary: str = "",
+        status: str = "ok",
+    ) -> AuditStep:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        step = AuditStep(
+            id=f"step-{len(self.steps) + 1:02d}",
+            agent=agent,
+            action=action,
+            status=status,
+            started_at=dt.datetime.fromtimestamp(started, dt.UTC).isoformat(),
+            completed_at=now,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            tool_calls=tool_calls or [],
+            model_calls=model_calls or [],
+            deterministic_fallback=deterministic_fallback,
+            confidence=round(confidence, 2),
+            citations=citations or [],
+            human_checkpoint=human_checkpoint,
+            output_summary=output_summary,
+        )
+        self.steps.append(step)
+        return step
+
+
+def _default_stream_delay() -> float:
+    """Per-stage pacing for the live trace, in seconds (env-tunable).
+
+    The deterministic stages are near-instant; a small, honest display delay
+    lets judges watch the agents act in real time. It paces the *display*, never
+    the data. Set EDGE_STREAM_DELAY_MS=0 to disable.
+    """
+    try:
+        return max(0.0, int(os.environ.get("EDGE_STREAM_DELAY_MS", "420")) / 1000.0)
+    except ValueError:
+        return 0.42
+
+
+class EdgeInvestigator:
+    """Runs the full local-first Spark investigation pipeline."""
+
+    def __init__(self, service: HousingService | None = None):
+        self.service = service or get_service()
+        self.model = get_model_adapter()
+        self.stream_delay = _default_stream_delay()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    async def investigate(self, request: EdgeInvestigationRequest) -> EdgeInvestigationResponse:
+        """One-shot batch investigation (drains the streaming generator)."""
+        final: EdgeInvestigationResponse | None = None
+        async for event in self.run(request, pace=False):
+            if event["type"] == "result":
+                final = event["data"]
+        assert final is not None  # run() always emits exactly one result
+        return final
+
+    async def run(
+        self, request: EdgeInvestigationRequest, *, pace: bool = True
+    ) -> AsyncIterator[dict[str, object]]:
+        """Stream the pipeline, yielding one event per stage.
+
+        Event shapes (``data``/``patch`` values may be pydantic models — the SSE
+        layer JSON-encodes them):
+            {"type": "pipeline",     "stages": [{index, agent, label}, ...]}
+            {"type": "agent_start",  "index", "agent", "label", "action"}
+            {"type": "agent_done",   "index", "step": AuditStep, "patch": {...}}
+            {"type": "runtime",      "data": EdgeRuntimeStatus}
+            {"type": "result",       "data": EdgeInvestigationResponse}
+            {"type": "error",        "message": str}
+        """
+        delay = self.stream_delay if pace else 0.0
+        trace = _Trace()
+        evidence: list[EvidenceRef] = []
+
+        yield {
+            "type": "pipeline",
+            "stages": [
+                {"index": i, "agent": agent, "label": label}
+                for i, (agent, label) in enumerate(PIPELINE_STAGES)
+            ],
+        }
+
+        # --- 1. Address Resolver -----------------------------------------
+        yield self._start(0, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        resolved = self._resolve_address(request, trace)
+        yield {"type": "agent_done", "index": 0, "step": trace.steps[-1],
+               "patch": {"resolved": resolved}}
+
+        if not resolved.rsn:
+            # Honest early exit — nothing to investigate, but still auditable.
+            operator = self._operator_unavailable()
+            rights = RightsGroundingReport(
+                topics=[], rights=[], citations=[], disclaimer=tenant_rights.DISCLAIMER
+            )
+            runtime = await self.model.status(probe=False)
+            yield {"type": "runtime", "data": runtime}
+            yield {
+                "type": "result",
+                "data": EdgeInvestigationResponse(
+                    resolved=resolved,
+                    operator=operator,
+                    rights=rights,
+                    audit_trail=trace.steps,
+                    runtime=runtime,
+                    evidence=evidence,
+                    demo_addresses=list(DEMO_ADDRESSES),
+                    meta={"offline_ready": True, "error": "address_unresolved"},
+                ),
+            }
+            return
+
+        # --- 2. PIO Builder ----------------------------------------------
+        yield self._start(1, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        pio = await self._build_pio(resolved, trace)
+        risk = pio.risk
+        if risk:
+            evidence.extend(self._risk_evidence(risk, pio.overall_confidence or 0.95))
+        if pio.massing and pio.massing.matched:
+            evidence.append(self._massing_evidence(pio.massing, resolved.rsn or ""))
+        yield {"type": "agent_done", "index": 1, "step": trace.steps[-1],
+               "patch": {"pio": pio}}
+
+        # --- 3. Risk Analyst (deterministic) + value-for-risk ------------
+        yield self._start(2, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        self._risk_analysis(risk, trace, evidence)
+        value = value_for_risk(risk, asking_rent=request.asking_rent)
+        if value.available and risk is not None:
+            evidence.append(
+                EvidenceRef(
+                    id=f"value:{risk.rsn}",
+                    source="value_for_risk",
+                    title=f"Value-for-risk — {value.verdict}",
+                    detail=f"{value.rationale} {value.disclaimer}",
+                    confidence=0.6,
+                )
+            )
+            if trace.steps:
+                trace.steps[-1].output_summary += (
+                    f" · Value: {value.verdict} (~${value.condition_fair_rent:,} fair "
+                    f"vs ~${value.market_rent:,} area-typical)."
+                )
+        yield {"type": "agent_done", "index": 2, "step": trace.steps[-1],
+               "patch": {"risk": risk, "value": value, "evidence": list(evidence)}}
+
+        # --- 4. Operator / Portfolio -------------------------------------
+        yield self._start(3, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        operator = self._operator_portfolio(risk, trace)
+        yield {"type": "agent_done", "index": 3, "step": trace.steps[-1],
+               "patch": {"operator": operator}}
+
+        # --- 5. Rights Grounding -----------------------------------------
+        yield self._start(4, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        rights = self._rights_grounding(risk, trace)
+        evidence.extend(rights.citations)
+        yield {"type": "agent_done", "index": 4, "step": trace.steps[-1],
+               "patch": {"rights": rights, "evidence": list(evidence)}}
+
+        # --- 6. Advocate (local model, deterministic fallback) -----------
+        yield self._start(5, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        advocacy = await self._advocate(risk, rights, request.profile, trace, evidence, value)
+        yield {"type": "agent_done", "index": 5, "step": trace.steps[-1],
+               "patch": {"advocacy": advocacy}}
+
+        # --- 7. 311 Draft -------------------------------------------------
+        yield self._start(6, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        draft = await self._draft_311(risk, rights, trace, evidence)
+        yield {"type": "agent_done", "index": 6, "step": trace.steps[-1],
+               "patch": {"draft_311": draft}}
+
+        # --- 8. Audit -----------------------------------------------------
+        yield self._start(7, delay)
+        if delay:
+            await asyncio.sleep(delay)
+        self._audit_checkpoint(trace, advocacy, draft, evidence)
+        yield {"type": "agent_done", "index": 7, "step": trace.steps[-1],
+               "patch": {"audit_trail": list(trace.steps)}}
+
+        runtime = await self.model.status(probe=False)
+        yield {"type": "runtime", "data": runtime}
+        yield {
+            "type": "result",
+            "data": EdgeInvestigationResponse(
+                resolved=resolved,
+                pio=pio,
+                risk=risk,
+                value=value,
+                operator=operator,
+                rights=rights,
+                advocacy=advocacy,
+                draft_311=draft,
+                audit_trail=trace.steps,
+                runtime=runtime,
+                evidence=evidence,
+                demo_addresses=list(DEMO_ADDRESSES),
+                meta={
+                    "offline_ready": True,
+                    "model_optional": True,
+                    "data_source": (
+                        "City of Toronto Open Data — RentSafeTO Apartment "
+                        "Building Evaluations"
+                    ),
+                },
+            ),
+        }
+
+    @staticmethod
+    def _start(index: int, delay: float) -> dict[str, object]:
+        agent, label = PIPELINE_STAGES[index]
+        return {
+            "type": "agent_start",
+            "index": index,
+            "agent": agent,
+            "label": label,
+            "action": label,
+        }
+
+    # ------------------------------------------------------------------
+    # 1. Address Resolver
+    # ------------------------------------------------------------------
+    def _resolve_address(
+        self, request: EdgeInvestigationRequest, trace: _Trace
+    ) -> AddressResolution:
+        started = time.perf_counter()
+        query = request.address.strip()
+        normalized = normalize_address(query).canonical if query else ""
+
+        if request.rsn:
+            report = self.service.report(request.rsn)
+            if report:
+                resolution = AddressResolution(
+                    input=query or request.rsn,
+                    normalized=normalize_address(report.address).canonical,
+                    rsn=request.rsn,
+                    address=report.address,
+                    confidence=1.0,
+                    status="matched_by_rsn",
+                    candidates=[
+                        AddressCandidate(
+                            rsn=report.rsn,
+                            address=report.address,
+                            ward_name=report.ward_name,
+                            score=report.overall_score,
+                            match_confidence=1.0,
+                        )
+                    ],
+                )
+                trace.add(
+                    agent="Address Resolver Agent",
+                    action="Normalize input and match a Toronto apartment building",
+                    started=started,
+                    tool_calls=[
+                        ToolCallSummary(
+                            tool="BuildingStore.get_building",
+                            status="ok",
+                            latency_ms=int((time.perf_counter() - started) * 1000),
+                            output_summary=f"Matched RSN {request.rsn}.",
+                        )
+                    ],
+                    confidence=1.0,
+                    output_summary=f"Resolved to {report.address}.",
+                )
+                return resolution
+
+        search_term = query
+        if query:
+            na = normalize_address(query)
+            search_term = f"{na.street_number or ''} {na.street_name}".strip() or query
+        hits = self.service.search(search_term, 8) if search_term else []
+        candidates = [
+            AddressCandidate(
+                rsn=h.rsn,
+                address=h.address,
+                ward_name=h.ward_name,
+                score=h.score,
+                match_confidence=round(match_score(query, h.address), 2) if query else 0.0,
+            )
+            for h in hits
+        ]
+        candidates.sort(key=lambda c: c.match_confidence, reverse=True)
+        best = candidates[0] if candidates else None
+        checkpoint = None
+        status = "unresolved"
+        if best and best.match_confidence >= 0.7:
+            status = "matched_by_address"
+        elif best and best.match_confidence >= 0.5:
+            status = "approximate_match"
+            checkpoint = "Address match is approximate. Verify the building address before acting."
+        else:
+            best = None
+
+        resolution = AddressResolution(
+            input=query,
+            normalized=normalized,
+            rsn=best.rsn if best else None,
+            address=best.address if best else None,
+            confidence=best.match_confidence if best else 0.0,
+            status=status,
+            candidates=candidates,
+            human_checkpoint=checkpoint,
+        )
+        trace.add(
+            agent="Address Resolver Agent",
+            action="Normalize input and match a Toronto apartment building",
+            started=started,
+            tool_calls=[
+                ToolCallSummary(
+                    tool="BuildingStore.search",
+                    status="ok" if best else "unresolved",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_summary=f"{len(candidates)} candidate(s) from local SQLite.",
+                )
+            ],
+            confidence=resolution.confidence,
+            human_checkpoint=checkpoint,
+            output_summary=(
+                f"Resolved to {resolution.address}."
+                if resolution.address
+                else "No RentSafeTO building matched the input."
+            ),
+            status="ok" if best else "needs_human",
+        )
+        return resolution
+
+    # ------------------------------------------------------------------
+    # 2. PIO Builder
+    # ------------------------------------------------------------------
+    async def _build_pio(
+        self, resolved: AddressResolution, trace: _Trace
+    ) -> PropertyIntelligenceObject:
+        started = time.perf_counter()
+        pio = await get_pio_builder().build_async(
+            AddressQuery.make(raw_address=resolved.address or resolved.input, rsn=resolved.rsn)
+        )
+        citations = [
+            EvidenceRef(
+                id=f"pio:{p.source}",
+                source=p.source,
+                title=f"{p.source} provenance",
+                detail=f"{p.status}; confidence {p.confidence}. {p.note}",
+                confidence=p.confidence,
+            )
+            for p in pio.provenance
+        ]
+        trace.add(
+            agent="PIO Builder Agent",
+            action="Build a Property Intelligence Object with provenance and uncertainty",
+            started=started,
+            tool_calls=[
+                ToolCallSummary(
+                    tool="PIOBuilder.build_async",
+                    status="ok" if pio.resolved else "unresolved",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_summary=f"{len(pio.provenance)} source adapter(s) checked.",
+                )
+            ],
+            confidence=pio.overall_confidence,
+            citations=citations,
+            output_summary=(
+                f"PIO confidence {pio.overall_confidence}; "
+                f"completeness {pio.data_completeness}."
+                + (
+                    f" 3D Massing roof ~{pio.massing.max_height_m} m "
+                    f"({pio.massing.cross_check.status} vs storeys)."
+                    if pio.massing and pio.massing.matched and pio.massing.cross_check
+                    else ""
+                )
+            ),
+            status="ok" if pio.resolved else "needs_human",
+        )
+        return pio
+
+    # ------------------------------------------------------------------
+    # 3. Risk Analyst (deterministic)
+    # ------------------------------------------------------------------
+    def _risk_analysis(
+        self, risk: RiskReport | None, trace: _Trace, evidence: list[EvidenceRef]
+    ) -> None:
+        started = time.perf_counter()
+        if not risk:
+            trace.add(
+                agent="Risk Analyst Agent",
+                action="Run the deterministic RentSafeTO risk engine",
+                started=started,
+                status="error",
+                confidence=0.0,
+                output_summary="No risk report available.",
+            )
+            return
+        risk_refs = [e for e in evidence if e.id.startswith(f"rent:{risk.rsn}")]
+        trace.add(
+            agent="Risk Analyst Agent",
+            action="Run the deterministic RentSafeTO risk engine",
+            started=started,
+            tool_calls=[
+                ToolCallSummary(
+                    tool="RiskEngine.assess",
+                    status="ok",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_summary=(
+                        f"Grade {risk.grade}; risk {risk.risk_level}; "
+                        f"{len(risk.red_flags)} red flag(s)."
+                    ),
+                )
+            ],
+            deterministic_fallback=True,
+            confidence=0.98,
+            citations=risk_refs[:8],
+            output_summary=risk.summary_line,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Operator / Portfolio (honest ward context, never invents an operator)
+    # ------------------------------------------------------------------
+    def _operator_portfolio(
+        self, risk: RiskReport | None, trace: _Trace
+    ) -> OperatorPortfolioReport:
+        started = time.perf_counter()
+        report = self._operator_unavailable()
+        tool_calls = [
+            ToolCallSummary(
+                tool="RentSafeTO local schema inspection",
+                status="unavailable",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                output_summary="Local RentSafeTO evaluation cache has no operator/manager field.",
+            )
+        ]
+
+        # Even without an operator field, we can give *honest* portfolio context:
+        # how this building sits among its geographic peers in the same ward.
+        # These are clearly labelled as ward peers, NOT confirmed same-operator.
+        if risk and risk.ward_name:
+            try:
+                stats = self.service.neighbourhood(risk.ward_name)
+                peers = self.service.worst(6, ward_name=risk.ward_name)
+                patterns: list[str] = []
+                n = stats.get("n_buildings")
+                hi = stats.get("n_high_risk")
+                avg = stats.get("avg_score")
+                if n and hi is not None:
+                    patterns.append(
+                        f"{hi} of {n} buildings in {risk.ward_name} score below 65 "
+                        "(City high-risk threshold)."
+                    )
+                if avg is not None and risk.overall_score is not None:
+                    delta = round(risk.overall_score - avg, 1)
+                    rel = "below" if delta < 0 else "above"
+                    patterns.append(
+                        f"Ward average City score is {avg}; this building is "
+                        f"{abs(delta)} points {rel} the ward average."
+                    )
+                report.repeated_patterns = patterns
+                report.portfolio_buildings = [
+                    {
+                        "rsn": b.rsn,
+                        "address": b.address,
+                        "score": b.score,
+                        "grade": b.grade,
+                        "is_subject": b.rsn == risk.rsn,
+                    }
+                    for b in peers
+                ]
+                report.portfolio_basis = (
+                    f"Lowest-scoring RentSafeTO buildings in {risk.ward_name}. These are "
+                    "geographic peers in the same ward — NOT confirmed to share an operator."
+                )
+                report.status = "operator_field_unavailable_ward_context_provided"
+                tool_calls.append(
+                    ToolCallSummary(
+                        tool="HousingService.neighbourhood + worst",
+                        status="ok",
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        output_summary=(
+                            f"{len(report.portfolio_buildings)} ward peer(s); "
+                            f"{len(patterns)} factual pattern(s)."
+                        ),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - context is best-effort, never fatal
+                pass
+
+        trace.add(
+            agent="Operator / Portfolio Agent",
+            action="Identify operator and check repeated portfolio risk patterns",
+            started=started,
+            tool_calls=tool_calls,
+            confidence=report.confidence,
+            human_checkpoint=report.human_checkpoint,
+            output_summary=(
+                f"{len(report.repeated_patterns)} ward pattern(s); operator not in local cache."
+                if report.repeated_patterns
+                else report.uncertainty
+            ),
+            status="needs_human",
+        )
+        return report
+
+    @staticmethod
+    def _operator_unavailable() -> OperatorPortfolioReport:
+        return OperatorPortfolioReport(
+            status="operator_not_in_local_rentsafeto_cache",
+            operator_source="City RentSafeTO apartment-evaluation rows in the local SQLite cache",
+            confidence=0.0,
+            repeated_patterns=[],
+            portfolio_buildings=[],
+            uncertainty=(
+                "The local RentSafeTO evaluation schema has no property-manager/operator "
+                "field, so the system will not infer one. Add a verified local operator "
+                "registry export to enable true portfolio pattern analysis across an owner."
+            ),
+            human_checkpoint=(
+                "Verify the landlord/property manager from lease documents or a trusted "
+                "local registry before making any operator-level claims."
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Rights Grounding
+    # ------------------------------------------------------------------
+    def _rights_grounding(
+        self, risk: RiskReport | None, trace: _Trace
+    ) -> RightsGroundingReport:
+        started = time.perf_counter()
+        if not risk:
+            return RightsGroundingReport(
+                topics=[], rights=[], citations=[], disclaimer=tenant_rights.DISCLAIMER
+            )
+        rights = tenant_rights.relevant_rights(risk)
+        citations = [
+            EvidenceRef(
+                id=f"rights:{r.topic}",
+                source="verified_tenant_rights",
+                title=r.title,
+                detail=f"{r.legal_basis} Source: {r.source}",
+                confidence=0.95,
+            )
+            for r in rights
+        ]
+        out = RightsGroundingReport(
+            topics=tenant_rights.topics_for(risk),
+            rights=[
+                {
+                    "topic": r.topic,
+                    "title": r.title,
+                    "right": r.right,
+                    "legal_basis": r.legal_basis,
+                    "source": r.source,
+                    "what_you_can_do": list(r.what_you_can_do),
+                    "escalation": r.escalation,
+                }
+                for r in rights
+            ],
+            citations=citations,
+            disclaimer=tenant_rights.DISCLAIMER,
+        )
+        trace.add(
+            agent="Rights Grounding Agent",
+            action="Map building issues to verified Ontario tenant-rights information",
+            started=started,
+            tool_calls=[
+                ToolCallSummary(
+                    tool="tenant_rights.relevant_rights",
+                    status="ok",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    output_summary=f"{len(rights)} right(s) grounded from verified local knowledge.",
+                )
+            ],
+            deterministic_fallback=True,
+            confidence=0.95,
+            citations=citations,
+            human_checkpoint=(
+                "Rights guidance is legal information, not legal advice. Review with a "
+                "clinic, licensed paralegal or lawyer before filing."
+            ),
+            output_summary=", ".join(out.topics) or "No specific rights topic triggered.",
+        )
+        return out
+
+    # ------------------------------------------------------------------
+    # 6. Advocate (local model with deterministic fallback)
+    # ------------------------------------------------------------------
+    async def _advocate(
+        self,
+        risk: RiskReport | None,
+        rights: RightsGroundingReport,
+        profile: UserProfile,
+        trace: _Trace,
+        evidence: list[EvidenceRef],
+        value: ValueForRisk | None = None,
+    ) -> AdvocacyReport | None:
+        started = time.perf_counter()
+        if not risk:
+            return None
+
+        deterministic = self._deterministic_advocacy(risk)
+        allowed_ids = {e.id for e in evidence}
+        narrative, model_call = await self.model.generate_json(
+            agent="Advocate Agent",
+            response_model=AdvocateNarrativeOutput,
+            max_tokens=650,
+            temperature=0.25,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Meraklis's Advocate Agent. Use only the supplied "
+                        "evidence IDs. Do not add legal claims beyond the rights context. "
+                        "Return valid JSON only."
+                    ),
+                },
+                {"role": "user", "content": self._advocate_prompt(risk, rights, profile, evidence, value)},
+            ],
+        )
+        if narrative and set(narrative.cited_evidence_ids).issubset(allowed_ids):
+            deterministic.headline = narrative.headline
+            deterministic.bottom_line = narrative.bottom_line
+            deterministic.what_this_means_for_you = narrative.what_this_means_for_you
+            deterministic.generated_by = "local_model"
+            deterministic.limitations = (
+                "Generated by the configured local OpenAI-compatible model and grounded "
+                "against local evidence IDs."
+            )
+        else:
+            deterministic.generated_by = "deterministic"
+            deterministic.limitations = (
+                "Local model unavailable or failed validation. This guidance is a "
+                "deterministic fallback generated from RentSafeTO, the risk engine and "
+                "verified rights grounding."
+            )
+
+        trace.add(
+            agent="Advocate Agent",
+            action="Generate plain-language renter guidance tailored to the profile",
+            started=started,
+            model_calls=[model_call],
+            deterministic_fallback=deterministic.generated_by == "deterministic",
+            confidence=0.85 if deterministic.generated_by == "local_model" else 0.78,
+            citations=[e for e in evidence if e.id in allowed_ids][:10],
+            human_checkpoint=(
+                "Review the guidance and the underlying RentSafeTO evidence before making "
+                "a housing decision."
+            ),
+            output_summary=deterministic.bottom_line,
+        )
+        return deterministic
+
+    # ------------------------------------------------------------------
+    # 7. 311 Draft
+    # ------------------------------------------------------------------
+    async def _draft_311(
+        self,
+        risk: RiskReport | None,
+        rights: RightsGroundingReport,
+        trace: _Trace,
+        evidence: list[EvidenceRef],
+    ) -> ComplaintDraft | None:
+        started = time.perf_counter()
+        if not risk:
+            return None
+        deterministic = self._deterministic_311(risk, rights, evidence)
+        allowed_ids = {e.id for e in evidence}
+        model_out, model_call = await self.model.generate_json(
+            agent="311 Draft Agent",
+            response_model=ComplaintDraftOutput,
+            max_tokens=700,
+            temperature=0.1,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Draft a Toronto 311 complaint summary from supplied evidence only. "
+                        "Do not claim current conditions beyond the last RentSafeTO "
+                        "inspection. Return valid JSON only."
+                    ),
+                },
+                {"role": "user", "content": self._draft_prompt(risk, rights, evidence)},
+            ],
+        )
+        if model_out and set(model_out.cited_evidence_ids).issubset(allowed_ids):
+            deterministic.title = model_out.title
+            deterministic.body = model_out.body
+            deterministic.evidence_ids = model_out.cited_evidence_ids
+
+        trace.add(
+            agent="311 Draft Agent",
+            action="Draft a complaint summary using only cited evidence",
+            started=started,
+            model_calls=[model_call],
+            deterministic_fallback=model_call.fallback_used,
+            confidence=0.86 if not model_call.fallback_used else 0.8,
+            citations=[e for e in evidence if e.id in deterministic.evidence_ids],
+            human_checkpoint=deterministic.approval_gate,
+            output_summary="311 draft prepared but not submitted.",
+        )
+        return deterministic
+
+    # ------------------------------------------------------------------
+    # 8. Audit
+    # ------------------------------------------------------------------
+    def _audit_checkpoint(
+        self,
+        trace: _Trace,
+        advocacy: AdvocacyReport | None,
+        draft: ComplaintDraft | None,
+        evidence: list[EvidenceRef],
+    ) -> None:
+        started = time.perf_counter()
+        checkpoints: list[str] = []
+        if advocacy:
+            checkpoints.extend(advocacy.verification_checkpoints)
+        if draft:
+            checkpoints.append(draft.approval_gate)
+        n_model = sum(len(s.model_calls) for s in trace.steps)
+        n_fallback = sum(1 for s in trace.steps if s.deterministic_fallback)
+        trace.add(
+            agent="Audit Agent",
+            action="Record trace, fallbacks, confidence, citations and human checkpoints",
+            started=started,
+            deterministic_fallback=True,
+            confidence=1.0,
+            citations=evidence[:12],
+            human_checkpoint="; ".join(checkpoints[:3]) if checkpoints else None,
+            output_summary=(
+                f"{len(trace.steps) + 1} audited step(s); {len(evidence)} evidence "
+                f"record(s); {n_model} model call(s); {n_fallback} deterministic step(s)."
+            ),
+        )
+
+    # ==================================================================
+    # Deterministic builders + evidence (pure, offline, no LLM)
+    # ==================================================================
+    @staticmethod
+    def _massing_evidence(massing, rsn: str) -> EvidenceRef:
+        cc = massing.cross_check
+        detail = (
+            f"City of Toronto 3D Massing: roof ~{massing.max_height_m} m "
+            f"(avg {massing.avg_height_m} m), footprint {massing.footprint_area_m2} m², "
+            f"source {massing.height_source}. "
+            + (cc.note if cc else "")
+        )
+        return EvidenceRef(
+            id=f"massing:{rsn}",
+            source="toronto_3d_massing",
+            title="3D Massing building height",
+            detail=detail.strip(),
+            confidence=0.9,
+            url="https://open.toronto.ca/dataset/3d-massing/",
+        )
+
+    @staticmethod
+    def _risk_evidence(risk: RiskReport, confidence: float) -> list[EvidenceRef]:
+        refs = [
+            EvidenceRef(
+                id=f"rent:{risk.rsn}:score",
+                source="rentsafeto",
+                title="City evaluation score",
+                detail=(
+                    f"{risk.address} scored {risk.overall_score}/100 "
+                    f"(Grade {risk.grade}) on {risk.evaluation_date}."
+                ),
+                confidence=confidence,
+                url=_RENTSAFETO_URL,
+            ),
+            EvidenceRef(
+                id=f"rent:{risk.rsn}:trend",
+                source="rentsafeto",
+                title="Score trend",
+                detail=risk.trend.narrative,
+                confidence=confidence,
+                url=_RENTSAFETO_URL,
+            ),
+        ]
+        for i, flag in enumerate(risk.red_flags[:10], start=1):
+            refs.append(
+                EvidenceRef(
+                    id=f"rent:{risk.rsn}:flag:{i}",
+                    source="rentsafeto",
+                    title=flag.title,
+                    detail=f"{flag.detail} Evidence: {flag.evidence or 'RentSafeTO category score.'}",
+                    confidence=confidence,
+                    url=_RENTSAFETO_URL,
+                )
+            )
+        return refs
+
+    @staticmethod
+    def _deterministic_advocacy(risk: RiskReport) -> AdvocacyReport:
+        rights = tenant_rights.relevant_rights(risk)
+        top_flags = [
+            f for f in risk.red_flags if f.severity in (Severity.CRITICAL, Severity.HIGH)
+        ][:5] or risk.red_flags[:3]
+        concerns = [
+            Concern(
+                title=f.title.split(":")[0] if ":" in f.title else f.title,
+                why_it_matters=f.detail,
+                severity=f.severity.value,
+            )
+            for f in top_flags
+        ]
+        nl = risk.newcomer_lens
+        actions: list[str] = []
+        for r in rights:
+            if r.what_you_can_do:
+                actions.append(r.what_you_can_do[0])
+        actions.extend(tenant_rights.ESCALATION_LADDER[:3])
+        seen: set[str] = set()
+        actions = [a for a in actions if not (a in seen or seen.add(a))][:6]
+        bottom_line = {
+            "Severe": "Pause before committing. The City data shows serious issues that should be verified in person and in writing.",
+            "High": "Proceed cautiously. Verify the red flags, ask for records, and keep a written trail.",
+            "Elevated": "Worth a closer review. Several issues should be checked before signing.",
+            "Moderate": "The City data is not alarming, but confirm the listed concerns during a viewing.",
+            "Low": "The City data looks comparatively strong, while still worth verifying in person.",
+        }.get(risk.risk_level, "There is not enough data for a confident recommendation.")
+        return AdvocacyReport(
+            rsn=risk.rsn,
+            address=risk.address,
+            risk_level=risk.risk_level,
+            grade=risk.grade,
+            overall_score=risk.overall_score,
+            headline=risk.summary_line,
+            bottom_line=bottom_line,
+            key_concerns=concerns,
+            what_this_means_for_you=(
+                (nl.summary if nl else "")
+                + " For a newcomer renter, the safest next step is to verify conditions in "
+                "person, ask for records, and keep every promise in writing."
+            ).strip(),
+            your_rights=[
+                RightSummary(
+                    title=r.title,
+                    summary=f"{r.right} ({r.legal_basis})",
+                    action=r.what_you_can_do[0] if r.what_you_can_do else r.escalation,
+                )
+                for r in rights
+            ],
+            recommended_actions=actions,
+            questions_before_signing=nl.questions_to_ask if nl else [],
+            positives=[s.title for s in risk.strengths],
+            generated_by="deterministic",
+            disclaimer=tenant_rights.DISCLAIMER,
+            continuum_mode=(
+                "human_verification" if risk.risk_level in {"High", "Severe"}
+                else "automated_recommendation"
+            ),
+            agency_stakes="high" if risk.risk_level in {"High", "Severe"} else "medium",
+            agency_rationale=(
+                "Housing and legal decisions are high-stakes; the app provides evidence-"
+                "backed information and pauses before action."
+            ),
+            verification_checkpoints=[
+                "Confirm the address and unit before relying on the report.",
+                "Verify current conditions — RentSafeTO reflects the last municipal inspection.",
+                "Review any legal or 311 action with a human advocate before filing.",
+            ],
+            data_confidence=0.95,
+            data_completeness=0.34,
+            uncertainties=list(
+                risk.not_assessed[:3]
+                and ["Some inspected areas may be unknown because access was obstructed/refused."]
+            ),
+        )
+
+    @staticmethod
+    def _deterministic_311(
+        risk: RiskReport, rights: RightsGroundingReport, evidence: list[EvidenceRef]
+    ) -> ComplaintDraft:
+        top = [
+            f for f in risk.red_flags if f.severity in (Severity.CRITICAL, Severity.HIGH)
+        ][:5] or risk.red_flags[:3]
+        issue_lines = "\n".join(f"- {f.title}: {f.evidence or f.detail}" for f in top)
+        topics = ", ".join(rights.topics) if rights.topics else "property standards"
+        evidence_ids = [e.id for e in evidence if e.id.startswith(f"rent:{risk.rsn}")][:7]
+        body = (
+            f"I am requesting a Toronto 311 / RentSafeTO review for {risk.address} "
+            f"(RSN {risk.rsn}). This draft is based on the City of Toronto RentSafeTO "
+            f"apartment-building evaluation data, not a new inspection.\n\n"
+            f"Last recorded City score: {risk.overall_score}/100 (Grade {risk.grade}); "
+            f"Meraklis risk level: {risk.risk_level}.\n\n"
+            f"Evidence-backed issues to verify:\n{issue_lines}\n\n"
+            f"Relevant topics: {topics}.\n\n"
+            "Please verify the current condition of the building and advise what enforcement "
+            "or inspection steps are available. I understand this message is a draft and has "
+            "not been submitted."
+        )
+        return ComplaintDraft(
+            title=f"Draft 311 request: RentSafeTO concerns at {risk.address}",
+            body=body,
+            evidence_ids=evidence_ids,
+            approval_gate=(
+                "Human approval required before copying this into 311 or sharing it with an "
+                "advocate. Meraklis never submits to a real city service."
+            ),
+        )
+
+    @staticmethod
+    def _advocate_prompt(
+        risk: RiskReport,
+        rights: RightsGroundingReport,
+        profile: UserProfile,
+        evidence: list[EvidenceRef],
+        value: ValueForRisk | None = None,
+    ) -> str:
+        evidence_lines = "\n".join(f"{e.id}: {e.title} - {e.detail}" for e in evidence[:14])
+        rights_lines = "\n".join(
+            f"- {r['title']}: {r['legal_basis']} Source: {r['source']}" for r in rights.rights
+        )
+        value_line = ""
+        if value is not None and value.available:
+            value_line = (
+                f"\nVALUE-FOR-RISK (a model estimate, not a live price; cite value:{risk.rsn} "
+                f"if you mention rent or affordability):\n{value.verdict}. {value.rationale}\n"
+            )
+        return f"""RENTER PROFILE:
+{profile.to_prompt()}
+
+BUILDING:
+{risk.address} (RSN {risk.rsn})
+Risk: {risk.risk_level}; score {risk.overall_score}/100; grade {risk.grade}
+Summary: {risk.summary_line}
+{value_line}
+EVIDENCE IDS (cite only these):
+{evidence_lines}
+
+RIGHTS CONTEXT (do not invent law):
+{rights_lines}
+
+Return JSON:
+{{
+  "headline": "plain-language verdict grounded in evidence",
+  "bottom_line": "single most important takeaway",
+  "what_this_means_for_you": "2-4 sentences for this renter",
+  "cited_evidence_ids": ["rent:{risk.rsn}:score"]
+}}"""
+
+    @staticmethod
+    def _draft_prompt(
+        risk: RiskReport, rights: RightsGroundingReport, evidence: list[EvidenceRef]
+    ) -> str:
+        evidence_lines = "\n".join(f"{e.id}: {e.title} - {e.detail}" for e in evidence[:14])
+        return f"""Draft a concise Toronto 311 complaint/request.
+
+Building: {risk.address} (RSN {risk.rsn})
+Use only these evidence IDs:
+{evidence_lines}
+
+Relevant rights/topics: {', '.join(rights.topics)}
+
+Return JSON:
+{{
+  "title": "Draft 311 request: ...",
+  "body": "draft text; say it is based on the last RentSafeTO inspection and not submitted",
+  "cited_evidence_ids": ["rent:{risk.rsn}:score"]
+}}"""
+
+
+@lru_cache(maxsize=1)
+def get_edge_investigator() -> EdgeInvestigator:
+    return EdgeInvestigator()

@@ -1,0 +1,14 @@
+# Meraklis — backend runtime dependencies.
+#
+# Recommended install (editable, from repo root):
+#     python -m venv .venv && source .venv/bin/activate
+#     pip install -e backend
+#
+# Or directly:
+#     pip install -r requirements.txt
+#
+httpx>=0.27
+pydantic>=2.10
+python-dotenv>=1.0
+fastapi>=0.115
+uvicorn[standard]>=0.32
