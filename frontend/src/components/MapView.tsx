@@ -1,17 +1,26 @@
-import { useMemo } from "react";
-import { MapContainer, TileLayer, CircleMarker, Tooltip, ZoomControl } from "react-leaflet";
+import { useEffect, useMemo } from "react";
+import { MapContainer, TileLayer, CircleMarker, Tooltip, ZoomControl, useMap } from "react-leaflet";
 import type { CityBuilding } from "../api";
-import { BAND_COLOR } from "./CityModel";
+import { BAND_COLOR } from "./MapCity";
+
+// Flies the Leaflet view to the user's location when "Near me" resolves.
+function Recenter({ me }: { me: { lat: number; lng: number } | null }) {
+  const map = useMap();
+  useEffect(() => { if (me) map.flyTo([me.lat, me.lng], 15); }, [me, map]);
+  return null;
+}
 
 // The OpenHome interactive map, brought into Meraklis: a zoomable / pannable dark
 // slippy map (CARTO dark_all — dark basemap *with* street names) and translucent
 // risk-coloured building markers. Buildings sit at their real lat/long.
-export function MapView({ buildings, minScore, includeUnknown, demoRsns, mostSevereRsn, onPick }: {
+export function MapView({ buildings, minScore, includeUnknown, demoRsns, mostSevereRsn, me, nearRsns, onPick }: {
   buildings: CityBuilding[];
   minScore: number;
   includeUnknown: boolean;
   demoRsns: Set<string>;
   mostSevereRsn: string | null;
+  me?: { lat: number; lng: number } | null;
+  nearRsns?: Set<string>;
   onPick: (input: { address?: string; rsn?: string | null }) => void;
 }) {
   const visible = useMemo(
@@ -29,10 +38,17 @@ export function MapView({ buildings, minScore, includeUnknown, demoRsns, mostSev
         subdomains="abcd" maxZoom={20}
       />
       <ZoomControl position="bottomright" />
+      <Recenter me={me ?? null} />
+      {me && (
+        <CircleMarker center={[me.lat, me.lng]} radius={8}
+          pathOptions={{ color: "#ffffff", fillColor: "#4aa3ff", fillOpacity: 0.9, weight: 2 }}>
+          <Tooltip direction="top" offset={[0, -4]} opacity={1}>You are here</Tooltip>
+        </CircleMarker>
+      )}
       {visible.map((b) => {
         const col = BAND_COLOR[b.risk_level || "Unknown"] || BAND_COLOR.Unknown;
         const isSevere = b.rsn === mostSevereRsn;
-        const emph = isSevere || demoRsns.has(b.rsn);
+        const emph = isSevere || demoRsns.has(b.rsn) || !!nearRsns?.has(b.rsn);
         return (
           <CircleMarker
             key={b.rsn}

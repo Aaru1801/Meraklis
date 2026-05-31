@@ -26,3 +26,13 @@ frontend/dist/
 .idea/
 .vscode/
 .claude/
+
+# Large 3D massing source (.gdb / zips). The small extracted web cache in
+# frontend/public/building-models.* is committed; this raw download is not.
+TorontoBuildingModels/
+
+# Self-hosted vector tiles (large; rsynced to the GX10, regenerable via ingest_pmtiles_data + tippecanoe)
+frontend/public/toronto.pmtiles
+
+# Landmark detailed 3D models (rsynced to GX10; regenerable via ingest_landmarks)
+frontend/public/landmarks.json

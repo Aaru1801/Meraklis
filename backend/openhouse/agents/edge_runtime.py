@@ -125,6 +125,18 @@ class LocalModelAdapter:
         self.base_url = os.environ.get("MODEL_BASE_URL", DEFAULT_MODEL_BASE_URL).rstrip("/")
         self.model_name = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
         self.api_key = os.environ.get("MODEL_API_KEY", "")
+        # Fallback model for languages the primary (NVIDIA Nemotron) doesn't cover well
+        # (e.g. Punjabi/Tagalog/Tamil/Urdu/Farsi). Already installed on the GX10.
+        self.multilingual_model_name = os.environ.get("MODEL_NAME_MULTILINGUAL", "gemma4:26b")
+        # Nemotron-3 is a reasoning model; for these grounded-JSON agents we disable
+        # its thinking channel. Otherwise complex / non-English prompts spend the whole
+        # token budget reasoning (Ollama returns that in a separate field, leaving
+        # content empty -> JSON parse fails). Empty string => leave the model default.
+        self.reasoning_effort = os.environ.get("MODEL_REASONING_EFFORT", "none")
+        # NVIDIA Nemotron Parse (document OCR/VLM) served via vLLM as a second
+        # OpenAI-compatible endpoint. Empty PARSE_BASE_URL => /api/vision disabled.
+        self.parse_base_url = os.environ.get("PARSE_BASE_URL", "").rstrip("/")
+        self.parse_model = os.environ.get("PARSE_MODEL", "nvidia/NVIDIA-Nemotron-Parse-v1.1")
         self.inference_calls = 0
         self._latencies: list[int] = []
         self.fallback_count = 0
@@ -198,9 +210,16 @@ class LocalModelAdapter:
         temperature: float = 0.2,
         max_tokens: int = 700,
         attempts: int = 2,
+        model: str | None = None,
     ) -> tuple[T | None, ModelCallSummary]:
-        """Generate and validate structured JSON, returning ``None`` on failure."""
-        call = ModelCallSummary(agent=agent, model=self.model_name, endpoint=self.base_url)
+        """Generate and validate structured JSON, returning ``None`` on failure.
+
+        ``model`` overrides the configured model for this call only (used to route
+        multilingual requests to a broader-coverage local model); the chosen model is
+        recorded on the audit trail.
+        """
+        chosen_model = model or self.model_name
+        call = ModelCallSummary(agent=agent, model=chosen_model, endpoint=self.base_url)
         working_messages = list(messages)
         started = time.perf_counter()
         last_error: str | None = None
@@ -208,12 +227,14 @@ class LocalModelAdapter:
         for attempt in range(attempts):
             call.retries = attempt
             payload = {
-                "model": self.model_name,
+                "model": chosen_model,
                 "messages": working_messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "response_format": {"type": "json_object"},
             }
+            if self.reasoning_effort:
+                payload["reasoning_effort"] = self.reasoning_effort
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=2.0)) as client:
                     resp = await client.post(self.chat_url, headers=self.headers(), json=payload)
@@ -261,6 +282,67 @@ class LocalModelAdapter:
         call.fallback_used = True
         call.error = last_error
         return None, call
+
+    async def parse_document(
+        self,
+        *,
+        image_b64: str,
+        prompt: str,
+        mime: str = "image/png",
+        max_tokens: int = 1400,
+        timeout_s: float = 150.0,
+    ) -> tuple[str | None, ModelCallSummary]:
+        """Run a LOCAL vision model (NVIDIA Nemotron Parse via vLLM) on one image.
+
+        Sends an OpenAI-compatible vision chat request to ``PARSE_BASE_URL`` and
+        returns the extracted text (markdown). Returns ``None`` when the parser
+        endpoint is unset or unreachable, so /api/vision degrades gracefully.
+        """
+        call = ModelCallSummary(
+            agent="Document Parser", model=self.parse_model,
+            endpoint=self.parse_base_url or "(unset)",
+        )
+        if not self.parse_base_url:
+            call.status = "error"
+            call.error = "PARSE_BASE_URL not configured; document parsing is disabled."
+            call.fallback_used = True
+            return None, call
+        started = time.perf_counter()
+        payload = {
+            "model": self.parse_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=3.0)) as client:
+                resp = await client.post(
+                    f"{self.parse_base_url}/chat/completions", headers=self.headers(), json=payload
+                )
+            resp.raise_for_status()
+            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+            latency = int((time.perf_counter() - started) * 1000)
+            self.inference_calls += 1
+            self._latencies.append(latency)
+            self.last_error = None
+            call.status = "ok"
+            call.latency_ms = latency
+            return (text or None), call
+        except Exception as exc:  # noqa: BLE001 - endpoint/parse failure -> graceful None
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            call.status = "error"
+            call.error = self.last_error
+            call.fallback_used = True
+            call.latency_ms = int((time.perf_counter() - started) * 1000)
+            return None, call
 
 
 _adapter: LocalModelAdapter | None = None

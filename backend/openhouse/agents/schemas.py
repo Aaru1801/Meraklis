@@ -25,6 +25,10 @@ class UserProfile(BaseModel):
         description="e.g. ['safety', 'heat', 'pests', 'quiet', 'near transit']",
     )
     notes: str | None = None
+    respond_language: str | None = Field(
+        default=None,
+        description="Language for renter-facing guidance, e.g. 'Simplified Chinese'. None = English.",
+    )
 
     def to_prompt(self) -> str:
         if self.model_dump(exclude_none=True, exclude_defaults=True) == {} and not self.priorities:
@@ -48,6 +52,8 @@ class UserProfile(BaseModel):
             bits.append(f"Stated priorities: {', '.join(self.priorities)}.")
         if self.notes:
             bits.append(f"Additional notes: {self.notes}")
+        if self.respond_language:
+            bits.append(f"Renter-facing guidance must be written in {self.respond_language}.")
         return " ".join(bits)
 
 

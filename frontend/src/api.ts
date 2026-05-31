@@ -223,6 +223,7 @@ export interface UserProfile {
   is_newcomer?: boolean;
   priorities?: string[];
   notes?: string | null;
+  respond_language?: string | null;
 }
 
 export interface EvidenceRef {
@@ -402,6 +403,16 @@ export interface EdgeInvestigationResponse {
   meta: Record<string, unknown>;
 }
 
+export interface VisionResult {
+  ok: boolean;
+  model: string;
+  extracted_text: string;
+  explanation: string;
+  rights_pointers: string[];
+  language: string;
+  error: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Streaming event union (one per SSE frame)
 // ---------------------------------------------------------------------------
@@ -517,6 +528,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: body(input),
     });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  },
+  analyzeImage: async (file: File, docHint: string, respondLanguage: string): Promise<VisionResult> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("doc_hint", docHint);
+    fd.append("respond_language", respondLanguage);
+    const res = await fetch("/api/vision", { method: "POST", body: fd });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
   },

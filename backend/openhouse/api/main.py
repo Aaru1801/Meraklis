@@ -13,12 +13,14 @@ deterministic output and say so in the audit trail.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +29,7 @@ from pydantic import BaseModel
 from ..agents.continuum_modes import DECISION_MATRIX, pipeline_modes
 from ..agents.edge import (
     DEMO_ADDRESSES,
+    NEMOTRON_LANGS,
     PIPELINE_STAGES,
     EdgeInvestigationRequest,
     get_edge_investigator,
@@ -266,6 +269,110 @@ async def edge_stream_get(
         ),
     )
     return _stream_response(request, http_request)
+
+
+# ---------------------------------------------------------------------------
+# Document vision (NVIDIA Nemotron Parse via vLLM) — read a tenant document
+# ---------------------------------------------------------------------------
+# NVIDIA Nemotron Parse task prompt — its trained control tokens. The output
+# interleaves text with <x_..><y_..> bounding boxes and <class_..> semantic tags,
+# which _clean_parse_output strips to leave readable text in reading order.
+_PARSE_PROMPT = "</s><s><predict_bbox><predict_classes><output_markdown>"
+
+
+def _clean_parse_output(text: str) -> str:
+    t = re.sub(r"<[xy]_[0-9.]+>", "", text)
+    t = re.sub(r"<class_[^>]*>", "", t)
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+class VisionExplanation(BaseModel):
+    explanation: str = ""
+    rights_pointers: list[str] = []
+
+
+class VisionResult(BaseModel):
+    ok: bool
+    model: str
+    extracted_text: str = ""
+    explanation: str = ""
+    rights_pointers: list[str] = []
+    language: str = "English"
+    error: str | None = None
+
+
+def _vision_explain_prompt(extracted: str, doc_hint: str, language: str) -> str:
+    hint = f"The user says this is: {doc_hint}.\n" if doc_hint else ""
+    lang_rule = (
+        f"Write `explanation` and every `rights_pointers` item in {language}.\n" if language else ""
+    )
+    return (
+        "The text below was extracted from a Toronto tenant's document or photo "
+        "(e.g. a lease, an N4/N12 notice, or a photo of a housing problem).\n"
+        f"{hint}{lang_rule}"
+        "Explain in plain language what it is and what it means for the renter, then "
+        "list 2-4 relevant Ontario/Toronto tenant-rights pointers. This is general "
+        "information, not legal advice; do not invent text that is not present.\n\n"
+        f"EXTRACTED TEXT:\n{extracted[:6000]}\n\n"
+        'Return JSON: {"explanation": "...", "rights_pointers": ["...", "..."]}'
+    )
+
+
+@app.post("/api/vision")
+async def vision(
+    file: UploadFile = File(...),
+    doc_hint: str = Form(""),
+    respond_language: str = Form("English"),
+) -> VisionResult:
+    """OCR a tenant document with a local vision model, then explain it in plain language."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=422, detail="Empty upload.")
+    if len(raw) > 8_000_000:
+        raise HTTPException(status_code=413, detail="Image too large (max ~8 MB).")
+    mime = file.content_type or "image/png"
+    image_b64 = base64.b64encode(raw).decode()
+    adapter = get_model_adapter()
+
+    extracted_raw, parse_call = await adapter.parse_document(
+        image_b64=image_b64, mime=mime, prompt=_PARSE_PROMPT
+    )
+    if not extracted_raw:
+        return VisionResult(
+            ok=False, model=adapter.parse_model, language=respond_language,
+            error=(parse_call.error or "Document parser unavailable."),
+        )
+    extracted = _clean_parse_output(extracted_raw)
+
+    lang = (respond_language or "").strip()
+    nonenglish = bool(lang) and lang.lower() != "english"
+    model_override = (
+        adapter.multilingual_model_name
+        if (nonenglish and lang.lower() not in NEMOTRON_LANGS)
+        else None
+    )
+    explanation, _ = await adapter.generate_json(
+        agent="Document Explainer",
+        response_model=VisionExplanation,
+        model=model_override,
+        max_tokens=900,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You explain tenant documents in plain language. General information "
+                    "only, not legal advice. Return valid JSON only."
+                ),
+            },
+            {"role": "user", "content": _vision_explain_prompt(extracted, doc_hint, lang if nonenglish else "")},
+        ],
+    )
+    return VisionResult(
+        ok=True, model=adapter.parse_model, language=respond_language,
+        extracted_text=extracted,
+        explanation=(explanation.explanation if explanation else ""),
+        rights_pointers=(explanation.rights_pointers if explanation else []),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -7,10 +7,18 @@ import { type DemoCard } from "./components/SearchScreen";
 import { CityLanding } from "./components/CityLanding";
 import { Workspace, type LiveData } from "./components/Workspace";
 import { SourceDrawer } from "./components/SourceDrawer";
-import type { AuditStep, CityBuilding, PipelineStage } from "./api";
+import type { AuditStep, CityBuilding, PipelineStage, UserProfile } from "./api";
 
 const EMPTY: LiveData = { audit_trail: [] };
-const PROFILE = { is_newcomer: true, has_children: true, priorities: ["safety", "pests", "heat"] };
+const PROFILE_KEY = "meraklis.profile";
+const DEFAULT_PROFILE: UserProfile = { is_newcomer: true, priorities: ["safety", "pests", "heat"] };
+function loadProfile(): UserProfile {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (raw) return { ...DEFAULT_PROFILE, ...(JSON.parse(raw) as UserProfile) };
+  } catch { /* ignore corrupt storage */ }
+  return DEFAULT_PROFILE;
+}
 
 export default function App() {
   const [view, setView] = useState<"search" | "workspace">("search");
@@ -29,6 +37,11 @@ export default function App() {
   const [approval, setApproval] = useState("pending");
   const [online, setOnline] = useState(false);
   const [sourceId, setSourceId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<UserProfile>(loadProfile);
+
+  useEffect(() => {
+    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch { /* ignore */ }
+  }, [profile]);
 
   const abortRef = useRef<AbortController | null>(null);
   const lastInput = useRef<{ address?: string; rsn?: string | null }>({});
@@ -83,12 +96,12 @@ export default function App() {
     setStages([]); setTraceByIndex({}); setRunningIndex(null); setData(EMPTY); setEvidence([]);
     setApproval("pending"); setSection("trace"); setView("workspace");
     try {
-      await streamInvestigation({ address: input.address, rsn: input.rsn, profile: PROFILE }, onEvent, controller.signal);
+      await streamInvestigation({ address: input.address, rsn: input.rsn, profile }, onEvent, controller.signal);
       setRunningIndex(null);
     } catch (err) {
       if (!controller.signal.aborted) setRunningIndex(null);
     }
-  }, [onEvent]);
+  }, [onEvent, profile]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -103,7 +116,7 @@ export default function App() {
   return (
     <EvidenceCtx.Provider value={ctxValue}>
       {view === "search" ? (
-        <CityLanding buildings={city} demos={demos} runtime={runtime} onPick={investigate} />
+        <CityLanding buildings={city} demos={demos} runtime={runtime} onPick={investigate} profile={profile} setProfile={setProfile} />
       ) : (
         <Workspace
           address={address}
