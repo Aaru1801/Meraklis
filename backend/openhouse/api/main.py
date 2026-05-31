@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,7 +29,6 @@ from pydantic import BaseModel
 from ..agents.continuum_modes import DECISION_MATRIX, pipeline_modes
 from ..agents.edge import (
     DEMO_ADDRESSES,
-    NEMOTRON_LANGS,
     PIPELINE_STAGES,
     EdgeInvestigationRequest,
     get_edge_investigator,
@@ -37,6 +36,7 @@ from ..agents.edge import (
 from ..agents.edge_runtime import SUPPORTED_BACKENDS, get_model_adapter
 from ..agents.schemas import UserProfile
 from ..agents.service import get_service
+from ..data import conditions
 from ..data.adapters.base import AddressQuery
 from ..data.pio import get_pio_builder
 
@@ -272,106 +272,138 @@ async def edge_stream_get(
 
 
 # ---------------------------------------------------------------------------
-# Document vision (NVIDIA Nemotron Parse via vLLM) — read a tenant document
+# Building-condition verification (NVIDIA Nemotron Nano VL via vLLM)
+#
+# A tenant uploads a photo tied to a specific building. The local vision model
+# classifies it as a maintenance ISSUE, a FIX/repair, or NONE. Verified reports
+# contribute a signed delta to a SEPARATE "live condition" score — the official
+# RentSafeTO score is never mutated (see openhouse.data.conditions).
 # ---------------------------------------------------------------------------
-# NVIDIA Nemotron Parse task prompt — its trained control tokens. The output
-# interleaves text with <x_..><y_..> bounding boxes and <class_..> semantic tags,
-# which _clean_parse_output strips to leave readable text in reading order.
-_PARSE_PROMPT = "</s><s><predict_bbox><predict_classes><output_markdown>"
+_CONDITION_PROMPT = (
+    "You are assessing a photo a Toronto tenant uploaded about their apartment or "
+    "building. Identify the physical condition shown and whether it is a maintenance "
+    "ISSUE (water leak, mould, pests, structural damage, missing/blocked safety "
+    "equipment, hazard, etc.), evidence of a FIX/repair of such an issue, or NONE "
+    "(no clear housing condition is visible).\n"
+    "Respond with ONLY a JSON object and nothing else:\n"
+    '{"kind": "issue"|"fix"|"none", "label": "short name, e.g. water leak", '
+    '"severity": "severe"|"moderate"|"minor"|"none", "confidence": 0.0-1.0, '
+    '"explanation": "1-2 sentences describing what is visible"}'
+)
+
+# Severity -> score delta. Issues lower the live score (a problem not in the last
+# City inspection); fixes raise it (a counted problem has been resolved).
+_ISSUE_DELTA = {"severe": -12, "moderate": -7, "minor": -3}
+_FIX_DELTA = {"severe": 10, "moderate": 6, "minor": 3}
 
 
-def _clean_parse_output(text: str) -> str:
-    t = re.sub(r"<[xy]_[0-9.]+>", "", text)
-    t = re.sub(r"<class_[^>]*>", "", t)
-    return re.sub(r"\n{3,}", "\n\n", t).strip()
+def _condition_delta(kind: str, severity: str) -> int:
+    if kind == "issue":
+        return _ISSUE_DELTA.get(severity, -5)
+    if kind == "fix":
+        return _FIX_DELTA.get(severity, 6)
+    return 0
 
 
-class VisionExplanation(BaseModel):
+def _json_from_text(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    start, end = t.find("{"), t.rfind("}")
+    return t[start : end + 1] if (start != -1 and end > start) else t
+
+
+class ConditionAnalysis(BaseModel):
+    kind: str = "none"
+    label: str = ""
+    severity: str = "none"
+    confidence: float = 0.0
     explanation: str = ""
-    rights_pointers: list[str] = []
 
 
-class VisionResult(BaseModel):
+class ConditionReport(BaseModel):
+    id: int
+    rsn: str
+    created_at: str
+    kind: str
+    label: str = ""
+    severity: str = "none"
+    delta: int
+    explanation: str = ""
+    model: str = ""
+
+
+class ConditionSummary(BaseModel):
+    rsn: str
+    base_score: int | None = None
+    delta_total: int = 0
+    live_score: int | None = None
+    n_reports: int = 0
+    reports: list[ConditionReport] = []
+
+
+class ConditionUploadResult(BaseModel):
     ok: bool
-    model: str
-    extracted_text: str = ""
-    explanation: str = ""
-    rights_pointers: list[str] = []
-    language: str = "English"
+    model: str = ""
+    analysis: ConditionAnalysis | None = None
+    delta: int = 0
+    recorded: bool = False
+    summary: ConditionSummary | None = None
     error: str | None = None
 
 
-def _vision_explain_prompt(extracted: str, doc_hint: str, language: str) -> str:
-    hint = f"The user says this is: {doc_hint}.\n" if doc_hint else ""
-    lang_rule = (
-        f"Write `explanation` and every `rights_pointers` item in {language}.\n" if language else ""
-    )
-    return (
-        "The text below was extracted from a Toronto tenant's document or photo "
-        "(e.g. a lease, an N4/N12 notice, or a photo of a housing problem).\n"
-        f"{hint}{lang_rule}"
-        "Explain in plain language what it is and what it means for the renter, then "
-        "list 2-4 relevant Ontario/Toronto tenant-rights pointers. This is general "
-        "information, not legal advice; do not invent text that is not present.\n\n"
-        f"EXTRACTED TEXT:\n{extracted[:6000]}\n\n"
-        'Return JSON: {"explanation": "...", "rights_pointers": ["...", "..."]}'
-    )
+@app.get("/api/buildings/{rsn}/conditions")
+def building_conditions(rsn: str) -> ConditionSummary:
+    """Tenant-reported conditions + the live (community-adjusted) score for a building."""
+    report = _svc.report(rsn)
+    base = report.overall_score if report else None
+    return ConditionSummary(**conditions.summary(rsn, base))
 
 
-@app.post("/api/vision")
-async def vision(
-    file: UploadFile = File(...),
-    doc_hint: str = Form(""),
-    respond_language: str = Form("English"),
-) -> VisionResult:
-    """OCR a tenant document with a local vision model, then explain it in plain language."""
+@app.post("/api/buildings/{rsn}/condition")
+async def submit_condition(rsn: str, file: UploadFile = File(...)) -> ConditionUploadResult:
+    """Assess an uploaded condition photo and, if it shows an issue or a fix, record it."""
+    report = _svc.report(rsn)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"No building found for RSN {rsn}")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=422, detail="Empty upload.")
     if len(raw) > 8_000_000:
         raise HTTPException(status_code=413, detail="Image too large (max ~8 MB).")
-    mime = file.content_type or "image/png"
+    mime = file.content_type or "image/jpeg"
     image_b64 = base64.b64encode(raw).decode()
     adapter = get_model_adapter()
 
-    extracted_raw, parse_call = await adapter.parse_document(
-        image_b64=image_b64, mime=mime, prompt=_PARSE_PROMPT
-    )
-    if not extracted_raw:
-        return VisionResult(
-            ok=False, model=adapter.parse_model, language=respond_language,
-            error=(parse_call.error or "Document parser unavailable."),
+    text, call = await adapter.analyze_image(image_b64=image_b64, mime=mime, prompt=_CONDITION_PROMPT)
+    if not text:
+        log.info("condition analysis unavailable: %s", call.error)
+        return ConditionUploadResult(
+            ok=False, model=adapter.vision_model,
+            error="The local vision model is offline right now — condition photos can't be analyzed until it's back up.",
         )
-    extracted = _clean_parse_output(extracted_raw)
+    try:
+        parsed = json.loads(_json_from_text(text))
+        analysis = ConditionAnalysis.model_validate(parsed)
+    except Exception:  # noqa: BLE001 - model returned non-JSON
+        return ConditionUploadResult(
+            ok=False, model=adapter.vision_model,
+            error="Could not interpret the photo. Try a clearer, well-lit image.",
+        )
 
-    lang = (respond_language or "").strip()
-    nonenglish = bool(lang) and lang.lower() != "english"
-    model_override = (
-        adapter.multilingual_model_name
-        if (nonenglish and lang.lower() not in NEMOTRON_LANGS)
-        else None
-    )
-    explanation, _ = await adapter.generate_json(
-        agent="Document Explainer",
-        response_model=VisionExplanation,
-        model=model_override,
-        max_tokens=900,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You explain tenant documents in plain language. General information "
-                    "only, not legal advice. Return valid JSON only."
-                ),
-            },
-            {"role": "user", "content": _vision_explain_prompt(extracted, doc_hint, lang if nonenglish else "")},
-        ],
-    )
-    return VisionResult(
-        ok=True, model=adapter.parse_model, language=respond_language,
-        extracted_text=extracted,
-        explanation=(explanation.explanation if explanation else ""),
-        rights_pointers=(explanation.rights_pointers if explanation else []),
+    delta = _condition_delta(analysis.kind, analysis.severity)
+    recorded = False
+    if analysis.kind in ("issue", "fix") and delta != 0:
+        conditions.add_report(
+            rsn=rsn, kind=analysis.kind, label=analysis.label, severity=analysis.severity,
+            delta=delta, explanation=analysis.explanation, model=adapter.vision_model,
+        )
+        recorded = True
+    summary = conditions.summary(rsn, report.overall_score)
+    return ConditionUploadResult(
+        ok=True, model=adapter.vision_model, analysis=analysis, delta=delta,
+        recorded=recorded, summary=ConditionSummary(**summary),
     )
 
 

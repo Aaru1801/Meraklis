@@ -1,13 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import type { CityBuilding, EdgeRuntimeStatus, UserProfile } from "../api";
 import { Icon } from "../lib/icons";
-import { Logo, Pill, Card, Switch } from "../lib/ui";
+import { Logo, Switch } from "../lib/ui";
 import { MapCity, BAND_COLOR } from "./MapCity";
 import { MapView } from "./MapView";
 import { BASEMAP } from "../lib/basemap";
 import type { DemoCard } from "./SearchScreen";
 import { nearest, nearestFlagged } from "../lib/geo";
-import { DocAnalyzer } from "./DocAnalyzer";
 
 const PRESETS: { label: string; min: number }[] = [
   { label: "All buildings", min: 0 },
@@ -39,11 +38,9 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
   const [includeUnknown, setIncludeUnknown] = useState(true);
   const [hover, setHover] = useState<CityBuilding | null>(null);
   const [view, setView] = useState<"map" | "3d">("map");
-  const [showPersonalize, setShowPersonalize] = useState(false);
   const [me, setMe] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [geoErr, setGeoErr] = useState(false);
-  const [showDoc, setShowDoc] = useState(false);
 
   const demoRsns = useMemo(() => new Set(demos.map((d) => d.rsn)), [demos]);
   const visibleCount = useMemo(
@@ -105,78 +102,13 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
       <div className="row" style={{ position: "absolute", top: 0, left: 0, right: 0, justifyContent: "space-between", padding: "16px 22px", gap: 16, pointerEvents: "none" }}>
         <div className="col gap8" style={{ pointerEvents: "auto" }}>
           <Logo />
-          <div className="row gap8 wrap">
-            <Pill color="var(--green)"><Icon name="cpu" size={11} /> Your Agents · Your Models · Your Edge</Pill>
-          </div>
         </div>
         <div className="row gap10" style={{ pointerEvents: "auto" }}>
-          <button onClick={() => { setShowPersonalize((v) => !v); setShowDoc(false); }} className="row gap6"
-            title="Personalize the report for your household & language"
-            style={{ padding: "5px 11px", borderRadius: 99, fontSize: 11.5, fontWeight: 600, backdropFilter: "blur(6px)",
-              border: "1px solid " + (showPersonalize ? "color-mix(in oklch, var(--green) 40%, transparent)" : "var(--border-2)"),
-              background: showPersonalize ? "var(--green-bg)" : "color-mix(in oklch, var(--surface) 80%, transparent)",
-              color: showPersonalize ? "var(--green)" : "var(--dim)" }}>
-            <Icon name="user-check" size={12} /> Personalize
-          </button>
-          <button onClick={() => { setShowDoc((v) => !v); setShowPersonalize(false); }} className="row gap6"
-            title="Read a lease, notice, or photo with a local vision model"
-            style={{ padding: "5px 11px", borderRadius: 99, fontSize: 11.5, fontWeight: 600, backdropFilter: "blur(6px)",
-              border: "1px solid " + (showDoc ? "color-mix(in oklch, var(--green) 40%, transparent)" : "var(--border-2)"),
-              background: showDoc ? "var(--green-bg)" : "color-mix(in oklch, var(--surface) 80%, transparent)",
-              color: showDoc ? "var(--green)" : "var(--dim)" }}>
-            <Icon name="image" size={12} /> Read a doc
-          </button>
           <span className="row gap6"><span className="dot dot-live" /><span className="mono" style={{ fontSize: 11, color: "var(--green)" }}>{runtime?.model_name ?? "local model"}</span></span>
           <span className="faint">·</span>
           <span className="mono faint" style={{ fontSize: 11 }}>{runtime?.gpu_hardware_mode ?? "NVIDIA Spark"}</span>
         </div>
       </div>
-
-      {showDoc && <DocAnalyzer profile={profile} onClose={() => setShowDoc(false)} />}
-
-      {/* personalize panel */}
-      {showPersonalize && (
-        <Card style={{ position: "absolute", top: 70, right: 22, width: 300, zIndex: 6, background: "color-mix(in oklch, var(--surface) 94%, transparent)", backdropFilter: "blur(10px)" }}>
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-            <div className="row gap8"><Icon name="user-check" size={15} color="var(--green)" /><span style={{ fontSize: 13, fontWeight: 700 }}>Personalize</span></div>
-            <button onClick={() => setShowPersonalize(false)} title="Close"><Icon name="x" size={14} color="var(--faint)" /></button>
-          </div>
-          <div className="faint" style={{ fontSize: 11, marginBottom: 13, lineHeight: 1.45 }}>
-            Tailors the report to your household and language. Stays on this device.
-          </div>
-
-          <div className="row" style={{ justifyContent: "space-between", marginBottom: 11 }}>
-            <span style={{ fontSize: 12.5 }}>Household size</span>
-            <div className="row gap8">
-              <button className="mono" onClick={() => setProfile({ ...profile, household_size: Math.max(1, (profile.household_size ?? 1) - 1) })}
-                style={{ width: 22, height: 22, borderRadius: 6, border: "1px solid var(--border-2)", color: "var(--dim)" }}>−</button>
-              <span className="mono" style={{ fontSize: 13, minWidth: 16, textAlign: "center" }}>{profile.household_size ?? "—"}</span>
-              <button className="mono" onClick={() => setProfile({ ...profile, household_size: Math.min(12, (profile.household_size ?? 0) + 1) })}
-                style={{ width: 22, height: 22, borderRadius: 6, border: "1px solid var(--border-2)", color: "var(--dim)" }}>+</button>
-            </div>
-          </div>
-
-          {([["has_children", "Children at home"], ["has_seniors", "Seniors at home"], ["has_mobility_needs", "Mobility needs"]] as const).map(([key, label]) => (
-            <div key={key} className="row" style={{ justifyContent: "space-between", marginBottom: 9 }}>
-              <span style={{ fontSize: 12.5 }}>{label}</span>
-              <Switch on={!!profile[key]} onChange={(v) => setProfile({ ...profile, [key]: v })} />
-            </div>
-          ))}
-
-          <div style={{ height: 1, background: "var(--border)", margin: "11px 0" }} />
-
-          <div className="eyebrow" style={{ marginBottom: 6 }}>Report language</div>
-          <select value={profile.respond_language ?? "English"}
-            onChange={(e) => setProfile({ ...profile, respond_language: e.target.value === "English" ? null : e.target.value })}
-            style={{ width: "100%", padding: "7px 9px", borderRadius: 7, border: "1px solid var(--border-2)", background: "var(--surface-2)", color: "var(--text)", fontSize: 12.5 }}>
-            {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-          <div className="row gap6" style={{ marginTop: 8 }}>
-            <Icon name="cpu" size={11} color="var(--green)" />
-            <span className="faint" style={{ fontSize: 10.5 }}>Generated locally on {runtime?.model_name ?? "your NVIDIA model"}.</span>
-          </div>
-        </Card>
-      )}
 
       {/* search */}
       <div style={{ position: "absolute", top: 84, left: "50%", transform: "translateX(-50%)", width: "min(560px, 86vw)" }}>
@@ -219,8 +151,8 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
         </div>
       </div>
 
-      {/* filter panel */}
-      <div className="panel" style={{ position: "absolute", left: 22, bottom: 22, width: 290, padding: 16, background: "color-mix(in oklch, var(--surface) 90%, transparent)", backdropFilter: "blur(8px)" }}>
+      {/* filter + personalize panel */}
+      <div className="panel" style={{ position: "absolute", left: 22, bottom: 22, width: 290, padding: 16, maxHeight: "calc(100vh - 130px)", overflowY: "auto", background: "color-mix(in oklch, var(--surface) 90%, transparent)", backdropFilter: "blur(8px)" }}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
           <div className="row gap6"><Icon name="function-square" size={14} color="var(--green)" /><span style={{ fontSize: 13, fontWeight: 700 }}>Filter by risk</span></div>
           <span className="mono faint" style={{ fontSize: 10.5 }}>{visibleCount.toLocaleString()} / {buildings.length.toLocaleString()}</span>
@@ -249,6 +181,34 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
             <span style={{ width: 9, height: 9, borderRadius: 2, background: BAND_COLOR.Unknown }} /><span className="faint" style={{ fontSize: 10.5 }}>No score</span>
           </button>
         </div>
+
+        {/* personalize — tailors the building report (household + language) */}
+        <div style={{ height: 1, background: "var(--border)", margin: "12px 0 10px" }} />
+        <div className="row gap6" style={{ marginBottom: 9 }}>
+          <Icon name="user-check" size={13} color="var(--green)" />
+          <span style={{ fontSize: 12.5, fontWeight: 700 }}>Personalize report</span>
+        </div>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+          <span className="faint" style={{ fontSize: 11.5 }}>Household size</span>
+          <div className="row gap8">
+            <button className="mono" onClick={() => setProfile({ ...profile, household_size: Math.max(1, (profile.household_size ?? 1) - 1) })}
+              style={{ width: 20, height: 20, borderRadius: 5, border: "1px solid var(--border-2)", color: "var(--dim)" }}>−</button>
+            <span className="mono" style={{ fontSize: 12.5, minWidth: 14, textAlign: "center" }}>{profile.household_size ?? "—"}</span>
+            <button className="mono" onClick={() => setProfile({ ...profile, household_size: Math.min(12, (profile.household_size ?? 0) + 1) })}
+              style={{ width: 20, height: 20, borderRadius: 5, border: "1px solid var(--border-2)", color: "var(--dim)" }}>+</button>
+          </div>
+        </div>
+        {([["has_children", "Children at home"], ["has_seniors", "Seniors at home"], ["has_mobility_needs", "Mobility needs"]] as const).map(([key, label]) => (
+          <div key={key} className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+            <span className="faint" style={{ fontSize: 11.5 }}>{label}</span>
+            <Switch on={!!profile[key]} onChange={(v) => setProfile({ ...profile, [key]: v })} />
+          </div>
+        ))}
+        <select value={profile.respond_language ?? "English"}
+          onChange={(e) => setProfile({ ...profile, respond_language: e.target.value === "English" ? null : e.target.value })}
+          style={{ width: "100%", marginTop: 6, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border-2)", background: "var(--surface-2)", color: "var(--text)", fontSize: 12 }}>
+          {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
       </div>
 
       {/* hover card (3D only — the map uses Leaflet tooltips) */}

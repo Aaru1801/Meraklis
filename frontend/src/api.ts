@@ -124,6 +124,12 @@ export interface RightSummary {
   summary: string;
   action: string;
 }
+export interface SchoolNearby {
+  name: string;
+  type: string;
+  address: string;
+  distance_m: number;
+}
 export interface AdvocacyReport {
   rsn: string;
   address: string;
@@ -138,6 +144,7 @@ export interface AdvocacyReport {
   recommended_actions: string[];
   questions_before_signing: string[];
   positives: string[];
+  schools_nearby: SchoolNearby[];
   generated_by: string;
   limitations: string;
   disclaimer: string;
@@ -403,13 +410,39 @@ export interface EdgeInvestigationResponse {
   meta: Record<string, unknown>;
 }
 
-export interface VisionResult {
+export interface ConditionAnalysis {
+  kind: string; // "issue" | "fix" | "none"
+  label: string;
+  severity: string; // "severe" | "moderate" | "minor" | "none"
+  confidence: number;
+  explanation: string;
+}
+export interface ConditionReport {
+  id: number;
+  rsn: string;
+  created_at: string;
+  kind: string;
+  label: string;
+  severity: string;
+  delta: number;
+  explanation: string;
+  model: string;
+}
+export interface ConditionSummary {
+  rsn: string;
+  base_score: number | null;
+  delta_total: number;
+  live_score: number | null;
+  n_reports: number;
+  reports: ConditionReport[];
+}
+export interface ConditionUploadResult {
   ok: boolean;
   model: string;
-  extracted_text: string;
-  explanation: string;
-  rights_pointers: string[];
-  language: string;
+  analysis: ConditionAnalysis | null;
+  delta: number;
+  recorded: boolean;
+  summary: ConditionSummary | null;
   error: string | null;
 }
 
@@ -531,12 +564,11 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
   },
-  analyzeImage: async (file: File, docHint: string, respondLanguage: string): Promise<VisionResult> => {
+  buildingConditions: (rsn: string) => get<ConditionSummary>(`/api/buildings/${rsn}/conditions`),
+  submitCondition: async (rsn: string, file: File): Promise<ConditionUploadResult> => {
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("doc_hint", docHint);
-    fd.append("respond_language", respondLanguage);
-    const res = await fetch("/api/vision", { method: "POST", body: fd });
+    const res = await fetch(`/api/buildings/${rsn}/condition`, { method: "POST", body: fd });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
   },

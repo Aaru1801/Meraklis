@@ -1,28 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { EdgeRuntimeStatus } from "../api";
 import { Icon } from "../lib/icons";
 import { KV, Pill, Switch } from "../lib/ui";
-
-function GpuBars({ active }: { active: boolean }) {
-  const [vals, setVals] = useState<number[]>(() => Array.from({ length: 28 }, () => 0.12));
-  useEffect(() => {
-    const id = setInterval(() => {
-      setVals((prev) => {
-        const next = prev.slice(1);
-        next.push(active ? 0.55 + Math.random() * 0.4 : 0.05 + Math.random() * 0.1);
-        return next;
-      });
-    }, active ? 180 : 420);
-    return () => clearInterval(id);
-  }, [active]);
-  return (
-    <div className="row" style={{ gap: 2, height: 34, alignItems: "flex-end" }}>
-      {vals.map((v, i) => (
-        <span key={i} style={{ flex: 1, height: Math.max(8, v * 100) + "%", background: active ? "var(--green)" : "var(--border-3)", borderRadius: 1, opacity: 0.3 + (i / vals.length) * 0.7, transition: "height .2s var(--ease)" }} />
-      ))}
-    </div>
-  );
-}
 
 export function RuntimePanel({ runtime, online, running, fallbacks, onToggleOnline }: {
   runtime: EdgeRuntimeStatus;
@@ -35,7 +14,6 @@ export function RuntimePanel({ runtime, online, running, fallbacks, onToggleOnli
   const active = online || running;
   const statusColor = online ? "var(--green)" : "var(--r-elev)";
   const fallbackActive = !online;
-  const gpuUtil = active ? 44 + Math.min(50, runtime.inference_calls * 6) : 2;
   const calls = runtime.inference_calls;
   const avgLat = runtime.average_latency_ms;
 
@@ -69,16 +47,6 @@ export function RuntimePanel({ runtime, online, running, fallbacks, onToggleOnli
             ? "Model endpoint unreachable. Reports come from the deterministic risk engine — no claims are fabricated."
             : "Generation grounded by the deterministic engine; the model adds plain-language framing only."}
         </p>
-      </div>
-
-      {/* GPU */}
-      <div>
-        <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-          <span className="eyebrow">GPU utilization</span>
-          <span className="mono" style={{ fontSize: 10.5, color: active ? "var(--green)" : "var(--faint)" }}>{active ? gpuUtil + "%" : "idle"}</span>
-        </div>
-        <GpuBars active={active} />
-        <p className="faint" style={{ fontSize: 10, marginTop: 5, lineHeight: 1.4 }}>{runtime.gpu_hardware_mode}</p>
       </div>
 
       {/* metrics grid */}

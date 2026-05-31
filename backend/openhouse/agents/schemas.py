@@ -85,6 +85,13 @@ class RightSummary(BaseModel):
     action: str
 
 
+class SchoolNearby(BaseModel):
+    name: str
+    type: str = ""
+    address: str = ""
+    distance_m: int = 0
+
+
 class AdvocacyReport(BaseModel):
     """The Advocate agent's final, personalized output."""
 
@@ -105,6 +112,8 @@ class AdvocacyReport(BaseModel):
     recommended_actions: list[str] = Field(default_factory=list)
     questions_before_signing: list[str] = Field(default_factory=list)
     positives: list[str] = Field(default_factory=list)
+    # Family context: nearby schools, populated when the profile has children.
+    schools_nearby: list[SchoolNearby] = Field(default_factory=list)
 
     generated_by: str = "deterministic"  # "ai" or "deterministic"
     limitations: str = ""

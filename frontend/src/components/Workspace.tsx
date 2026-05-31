@@ -9,6 +9,7 @@ import { gradeMeta, Logo } from "../lib/ui";
 import { NAV } from "../lib/agents";
 import { Trace } from "./Trace";
 import { RuntimePanel } from "./RuntimePanel";
+import { ConditionPanel } from "./ConditionPanel";
 import {
   ReportOverview, RedFlags, Intelligence, OperatorPanel, RightsPanel, AdvocateSection,
   DraftPanel, AuditPanel, ValuePanel, SafetyPanel,
@@ -75,6 +76,7 @@ export function Workspace({
     switch (section) {
       case "trace": return <Trace stages={stages} trace={traceByIndex} running={runningIndex} modelName={modelName} />;
       case "report": return risk ? <ReportOverview risk={risk} /> : <Waiting label="scoring risk…" />;
+      case "condition": return risk ? <ConditionPanel rsn={risk.rsn} baseScore={risk.overall_score} /> : <Waiting label="loading building…" />;
       case "value": return data.value && risk ? <ValuePanel value={data.value} risk={risk} /> : <Waiting label="valuing rent vs. condition…" />;
       case "flags": return risk ? <RedFlags risk={risk} /> : <Waiting label="scoring risk…" />;
       case "pio": return data.pio && risk ? <Intelligence pio={data.pio} risk={risk} resolved={data.resolved} /> : <Waiting label="building PIO…" />;

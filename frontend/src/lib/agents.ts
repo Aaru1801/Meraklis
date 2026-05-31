@@ -21,6 +21,7 @@ export interface NavItem { id: string; label: string; icon: string; live?: boole
 export const NAV: NavItem[] = [
   { id: "trace", label: "Investigation", icon: "activity", live: true },
   { id: "report", label: "Risk Report", icon: "gauge" },
+  { id: "condition", label: "Live Condition", icon: "image" },
   { id: "value", label: "Value-for-Risk", icon: "circle-dollar-sign" },
   { id: "flags", label: "Red Flags", icon: "flag" },
   { id: "pio", label: "Intelligence", icon: "boxes" },

@@ -622,6 +622,28 @@ export function AdvocateSection({ advocacy }: { advocacy: AdvocacyReport }) {
             </div>
           </Card>
         )}
+        {advocacy.schools_nearby.length > 0 && (
+          <Card>
+            <div className="row gap6" style={{ marginBottom: 10 }}>
+              <Icon name="map-pin" size={13} color="var(--green)" />
+              <span className="eyebrow" style={{ margin: 0 }}>Schools nearby · good for families</span>
+            </div>
+            <div className="col gap8">
+              {advocacy.schools_nearby.map((s, i) => (
+                <div key={i} className="row gap8" style={{ alignItems: "flex-start", justifyContent: "space-between" }}>
+                  <div className="row gap8" style={{ alignItems: "flex-start" }}>
+                    <Icon name="check-circle" size={14} color="var(--green)" style={{ marginTop: 1, flexShrink: 0 }} />
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.name}</div>
+                      <div className="faint" style={{ fontSize: 11 }}>{s.type}{s.address ? " · " + s.address : ""}</div>
+                    </div>
+                  </div>
+                  <span className="mono faint" style={{ fontSize: 11, flexShrink: 0 }}>{s.distance_m < 1000 ? s.distance_m + " m" : (s.distance_m / 1000).toFixed(1) + " km"}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
         <Banner icon="user-check" tone="warn" title={(advocacy.continuum_mode === "human_verification" ? "Human verification" : "Recommendation") + " · " + advocacy.agency_stakes + " stakes"}>
           {advocacy.agency_rationale}
         </Banner>

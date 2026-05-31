@@ -35,12 +35,13 @@ from ..data.adapters.base import AddressQuery
 from ..data.address import match_score, normalize_address
 from ..data.pio import PropertyIntelligenceObject, get_pio_builder
 from ..data.safety import NeighbourhoodSafety, safety_for
+from ..data.schools import nearest_schools
 from ..knowledge import tenant_rights
 from ..risk.report import RiskReport, Severity
 from ..risk.value import ValueForRisk, value_for_risk
 from .edge_runtime import EdgeRuntimeStatus, ModelCallSummary, get_model_adapter
 from .operator_resolver import resolve_operator
-from .schemas import AdvocacyReport, Concern, RightSummary, UserProfile
+from .schemas import AdvocacyReport, Concern, RightSummary, SchoolNearby, UserProfile
 from .service import HousingService, get_service
 
 # Languages the primary NVIDIA model (Nemotron-3-Nano) handles natively (per its
@@ -910,6 +911,14 @@ class EdgeInvestigator:
 
         deterministic = self._deterministic_advocacy(risk)
         allowed_ids = {e.id for e in evidence}
+        # Family context: when there are children, nearby schools are a positive factor.
+        schools: list[dict] = []
+        if profile.has_children and risk.latitude is not None and risk.longitude is not None:
+            schools = nearest_schools(risk.latitude, risk.longitude, n=5, radius_m=1500)
+            deterministic.schools_nearby = [
+                SchoolNearby(name=s["name"], type=s["type"], address=s["address"], distance_m=s["distance_m"])
+                for s in schools
+            ]
         # Route non-English guidance: Nemotron-supported languages stay on the primary
         # NVIDIA model; others use the multilingual fallback. English => primary.
         lang = (profile.respond_language or "").strip()
@@ -930,7 +939,7 @@ class EdgeInvestigator:
                         "Return valid JSON only."
                     ),
                 },
-                {"role": "user", "content": self._advocate_prompt(risk, rights, profile, evidence, value)},
+                {"role": "user", "content": self._advocate_prompt(risk, rights, profile, evidence, value, schools)},
             ],
         )
         if narrative and set(narrative.cited_evidence_ids).issubset(allowed_ids):
@@ -1222,6 +1231,7 @@ class EdgeInvestigator:
         profile: UserProfile,
         evidence: list[EvidenceRef],
         value: ValueForRisk | None = None,
+        schools: list[dict] | None = None,
     ) -> str:
         evidence_lines = "\n".join(f"{e.id}: {e.title} - {e.detail}" for e in evidence[:14])
         rights_lines = "\n".join(
@@ -1275,9 +1285,18 @@ class EdgeInvestigator:
                 f"translate identifiers).\n"
             )
 
+        schools_line = ""
+        if schools:
+            sl = "; ".join(f"{s['name']} ({s['type']}, {s['distance_m']} m)" for s in schools[:5])
+            schools_line = (
+                "\nFAMILY CONTEXT — schools within ~1.5 km (a plus for households with children; "
+                "mention the closest one or two as a positive in what_this_means_for_you):\n"
+                f"{sl}\n"
+            )
+
         return f"""RENTER PROFILE:
 {profile.to_prompt()}
-{lens_block}{lang_rule}
+{lens_block}{schools_line}{lang_rule}
 BUILDING:
 {risk.address} (RSN {risk.rsn})
 Risk: {risk.risk_level}; score {risk.overall_score}/100; grade {risk.grade}

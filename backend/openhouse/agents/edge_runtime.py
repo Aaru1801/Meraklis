@@ -133,10 +133,11 @@ class LocalModelAdapter:
         # token budget reasoning (Ollama returns that in a separate field, leaving
         # content empty -> JSON parse fails). Empty string => leave the model default.
         self.reasoning_effort = os.environ.get("MODEL_REASONING_EFFORT", "none")
-        # NVIDIA Nemotron Parse (document OCR/VLM) served via vLLM as a second
-        # OpenAI-compatible endpoint. Empty PARSE_BASE_URL => /api/vision disabled.
-        self.parse_base_url = os.environ.get("PARSE_BASE_URL", "").rstrip("/")
-        self.parse_model = os.environ.get("PARSE_MODEL", "nvidia/NVIDIA-Nemotron-Parse-v1.1")
+        # NVIDIA vision-language model (Nemotron Nano VL) served via vLLM as a second
+        # OpenAI-compatible endpoint, used to assess building-condition photos.
+        # Empty VISION_BASE_URL => condition verification is disabled.
+        self.vision_base_url = os.environ.get("VISION_BASE_URL", "").rstrip("/")
+        self.vision_model = os.environ.get("VISION_MODEL", "nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1")
         self.inference_calls = 0
         self._latencies: list[int] = []
         self.fallback_count = 0
@@ -283,33 +284,32 @@ class LocalModelAdapter:
         call.error = last_error
         return None, call
 
-    async def parse_document(
+    async def analyze_image(
         self,
         *,
         image_b64: str,
         prompt: str,
-        mime: str = "image/png",
-        max_tokens: int = 1400,
-        timeout_s: float = 150.0,
+        mime: str = "image/jpeg",
+        max_tokens: int = 700,
+        timeout_s: float = 120.0,
     ) -> tuple[str | None, ModelCallSummary]:
-        """Run a LOCAL vision model (NVIDIA Nemotron Parse via vLLM) on one image.
-
-        Sends an OpenAI-compatible vision chat request to ``PARSE_BASE_URL`` and
-        returns the extracted text (markdown). Returns ``None`` when the parser
-        endpoint is unset or unreachable, so /api/vision degrades gracefully.
+        """Run the LOCAL vision-language model (NVIDIA Nemotron Nano VL via vLLM) on
+        one image. Sends an OpenAI-compatible vision chat request to ``VISION_BASE_URL``
+        and returns the model's text. Returns ``None`` when the endpoint is unset or
+        unreachable, so condition verification degrades gracefully.
         """
         call = ModelCallSummary(
-            agent="Document Parser", model=self.parse_model,
-            endpoint=self.parse_base_url or "(unset)",
+            agent="Vision Agent", model=self.vision_model,
+            endpoint=self.vision_base_url or "(unset)",
         )
-        if not self.parse_base_url:
+        if not self.vision_base_url:
             call.status = "error"
-            call.error = "PARSE_BASE_URL not configured; document parsing is disabled."
+            call.error = "VISION_BASE_URL not configured; condition verification is disabled."
             call.fallback_used = True
             return None, call
         started = time.perf_counter()
         payload = {
-            "model": self.parse_model,
+            "model": self.vision_model,
             "messages": [
                 {
                     "role": "user",
@@ -320,12 +320,12 @@ class LocalModelAdapter:
                 }
             ],
             "max_tokens": max_tokens,
-            "temperature": 0.0,
+            "temperature": 0.1,
         }
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=3.0)) as client:
                 resp = await client.post(
-                    f"{self.parse_base_url}/chat/completions", headers=self.headers(), json=payload
+                    f"{self.vision_base_url}/chat/completions", headers=self.headers(), json=payload
                 )
             resp.raise_for_status()
             text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
@@ -336,7 +336,7 @@ class LocalModelAdapter:
             call.status = "ok"
             call.latency_ms = latency
             return (text or None), call
-        except Exception as exc:  # noqa: BLE001 - endpoint/parse failure -> graceful None
+        except Exception as exc:  # noqa: BLE001 - endpoint failure -> graceful None
             self.last_error = f"{type(exc).__name__}: {exc}"
             call.status = "error"
             call.error = self.last_error
