@@ -90,7 +90,7 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
 
       {/* view toggle */}
       <div className="panel row" style={{ position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)", padding: 3, gap: 2, background: "color-mix(in oklch, var(--surface) 88%, transparent)", backdropFilter: "blur(6px)" }}>
-        {([["map", "map", "Map"], ["3d", "box", "3D"]] as const).map(([v, ic, label]) => (
+        {([["map", "map", "2D"], ["3d", "box", "3D"]] as const).map(([v, ic, label]) => (
           <button key={v} onClick={() => setView(v)} className="row gap6"
             style={{ padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600,
               background: view === v ? "var(--green-bg)" : "transparent",
@@ -276,7 +276,7 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
       {/* hint */}
       <div className="mono" style={{ position: "absolute", bottom: 26, left: "50%", transform: "translateX(-50%)", fontSize: 10.5, color: "var(--ghost)", pointerEvents: "none" }}>
         {view === "map" ? "drag to pan · scroll to zoom · click a building to investigate"
-          : "drag to orbit · scroll to zoom · click a building to investigate"}
+          : "drag to pan · right-drag to tilt · scroll to zoom · click a building to investigate"}
       </div>
 
       {/* basemap attribution (OSM / CARTO terms) */}

@@ -182,7 +182,6 @@ function buildStyle(): maplibregl.StyleSpecification {
   };
 }
 
-let everPanned = false;
 
 export const MapCity = memo(function MapCity({ minScore, includeUnknown, onPick, onHover, me }: {
   minScore: number;
@@ -209,6 +208,8 @@ export const MapCity = memo(function MapCity({ minScore, includeUnknown, onPick,
     const map = new maplibregl.Map({
       container: ref.current, style: buildStyle(),
       center: [-79.383, 43.652], zoom: 13.2, pitch: 58, bearing: -17, maxPitch: 78, attributionControl: false,
+      minZoom: 11.5,
+      maxBounds: [[-79.6392, 43.5810], [-79.1152, 43.8554]], // Constrain to Toronto bounds
     });
     mapRef.current = map;
     (window as unknown as { __m: maplibregl.Map }).__m = map;
@@ -242,11 +243,6 @@ export const MapCity = memo(function MapCity({ minScore, includeUnknown, onPick,
       map.setFilter("risk-hi", active.length ? (["all", sf, inActive] as maplibregl.FilterSpecification) : ["==", ["get", "rsn"], "__none__"]);
     };
     refreshRef.current = refresh;
-
-    let spinRAF = 0, spinning = false;
-    const spinStep = () => { if (!spinning) return; map.setBearing(map.getBearing() + 0.12); spinRAF = requestAnimationFrame(spinStep); };
-    const stopSpin = () => { spinning = false; everPanned = true; cancelAnimationFrame(spinRAF); };
-    (["mousedown", "touchstart", "wheel", "dragstart"] as const).forEach((ev) => map.on(ev, stopSpin));
 
     map.on("load", () => {
       map.addLayer(createLandmarkLayer(), "road-label");
@@ -289,10 +285,9 @@ export const MapCity = memo(function MapCity({ minScore, includeUnknown, onPick,
       clearTimeout(spinnerTimeout);
       setLoading(false);
       refresh();
-      if (!everPanned) { spinning = true; spinRAF = requestAnimationFrame(spinStep); }
     });
 
-    return () => { clearTimeout(spinnerTimeout); cancelAnimationFrame(spinRAF); map.remove(); mapRef.current = null; readyRef.current = false; refreshRef.current = null; };
+    return () => { clearTimeout(spinnerTimeout); map.remove(); mapRef.current = null; readyRef.current = false; refreshRef.current = null; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

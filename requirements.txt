@@ -13,3 +13,5 @@ python-dotenv>=1.0
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.9  # FastAPI file uploads (/api/vision)
+shapely>=2.0  # WKB geometry decoding for ODB footprints
+pyproj>=3.6

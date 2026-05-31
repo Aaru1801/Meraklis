@@ -36,3 +36,5 @@ frontend/public/toronto.pmtiles
 
 # Landmark detailed 3D models (rsynced to GX10; regenerable via ingest_landmarks)
 frontend/public/landmarks.json
+
+*.gpkg
