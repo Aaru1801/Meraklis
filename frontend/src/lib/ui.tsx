@@ -41,7 +41,7 @@ export function Pill({ children, color, bg, className = "", style }: {
   children: ReactNode; color?: string; bg?: string; className?: string; style?: CSSProperties;
 }) {
   return (
-    <span className={"pill " + className} style={{ color: color || "var(--dim)", borderColor: color ? "color-mix(in oklch, currentColor 32%, transparent)" : "var(--border-2)", background: bg || "transparent", ...style }}>
+    <span className={"pill " + className} style={{ color: color || "var(--dim)", background: bg || "var(--surface-2)", ...style }}>
       {children}
     </span>
   );

@@ -10,6 +10,9 @@ venv/
 data/*.sqlite3-wal
 data/*.sqlite3-shm
 
+# Tenant-reported conditions are runtime/community data, not source (auto-created)
+data/conditions.sqlite3
+
 # Optional local market-listing cache exports
 data/cache/
 

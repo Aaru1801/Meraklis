@@ -38,8 +38,10 @@ export default function App() {
   const [online, setOnline] = useState(false);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile>(loadProfile);
+  const profileRef = useRef(profile);
 
   useEffect(() => {
+    profileRef.current = profile;
     try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); } catch { /* ignore */ }
   }, [profile]);
 
@@ -87,21 +89,32 @@ export default function App() {
     }
   }, []);
 
-  const investigate = useCallback(async (input: { address?: string; rsn?: string | null }) => {
+  const investigate = useCallback(async (input: { address?: string; rsn?: string | null }, opts?: { keepSection?: boolean }) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     lastInput.current = input;
     setAddress(input.address ?? "");
     setStages([]); setTraceByIndex({}); setRunningIndex(null); setData(EMPTY); setEvidence([]);
-    setApproval("pending"); setSection("trace"); setView("workspace");
+    setApproval("pending");
+    if (!opts?.keepSection) setSection("trace");
+    setView("workspace");
     try {
-      await streamInvestigation({ address: input.address, rsn: input.rsn, profile }, onEvent, controller.signal);
+      await streamInvestigation({ address: input.address, rsn: input.rsn, profile: profileRef.current }, onEvent, controller.signal);
       setRunningIndex(null);
     } catch (err) {
       if (!controller.signal.aborted) setRunningIndex(null);
     }
-  }, [onEvent, profile]);
+  }, [onEvent]);
+
+  // Switch the report language in place: update the profile and re-generate the
+  // current building's guidance in the new language, staying on the same tab.
+  const changeLanguage = useCallback((lang: string) => {
+    const next: UserProfile = { ...profileRef.current, respond_language: lang === "English" ? null : lang };
+    profileRef.current = next;
+    setProfile(next);
+    if (lastInput.current.address || lastInput.current.rsn) investigate(lastInput.current, { keepSection: true });
+  }, [investigate]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -133,6 +146,8 @@ export default function App() {
           setApproval={setApproval}
           onHome={() => { abortRef.current?.abort(); setView("search"); }}
           onRerun={() => investigate(lastInput.current)}
+          language={profile.respond_language ?? "English"}
+          onLanguage={changeLanguage}
         />
       )}
       <SourceDrawer ev={sourceId ? evidenceMap.get(sourceId) ?? null : null} onClose={() => setSourceId(null)} />

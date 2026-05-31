@@ -591,7 +591,13 @@ export function RightsPanel({ rights }: { rights: RightsGroundingReport }) {
 }
 
 /* ============ 6 · ADVOCATE ============ */
-export function AdvocateSection({ advocacy }: { advocacy: AdvocacyReport }) {
+const ADV_LANGUAGES = [
+  "English", "Simplified Chinese", "Traditional Chinese", "Punjabi", "Tagalog",
+  "Tamil", "Spanish", "Urdu", "Persian (Farsi)", "Portuguese", "Russian",
+  "Korean", "Arabic", "Italian", "French",
+];
+
+export function AdvocateSection({ advocacy, language, onLanguage }: { advocacy: AdvocacyReport; language: string; onLanguage: (lang: string) => void }) {
   const byModel = advocacy.generated_by === "local_model";
   const cards: { h: string; p: string }[] = [
     { h: "Bottom line", p: advocacy.bottom_line },
@@ -602,7 +608,15 @@ export function AdvocateSection({ advocacy }: { advocacy: AdvocacyReport }) {
     <div style={SCROLL}>
       <div className="col" style={{ gap: 16 }}>
         <SectionHeader icon="megaphone" eyebrow="Advocate" title="Plain-Language Guidance" sub="Customized for a newcomer renter profile and grounded in the cited rights — no new claims introduced."
-          right={<Pill color={byModel ? "var(--green)" : "var(--c-tool)"}><Icon name={byModel ? "cpu" : "function-square"} size={11} /> {byModel ? "local model" : "deterministic"}</Pill>} />
+          right={
+            <div className="row gap8">
+              <select value={language} onChange={(e) => onLanguage(e.target.value)} title="Generate this guidance in another language"
+                style={{ padding: "4px 9px", borderRadius: 4, border: "1px solid var(--border-2)", background: "var(--surface)", color: "var(--text)", fontSize: 12 }}>
+                {ADV_LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+              </select>
+              <Pill color={byModel ? "var(--green)" : "var(--c-tool)"}><Icon name={byModel ? "cpu" : "function-square"} size={11} /> {byModel ? "local model" : "deterministic"}</Pill>
+            </div>
+          } />
         <p style={{ fontSize: 14, lineHeight: 1.55 }}>{advocacy.headline}</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           {cards.map((s, i) => (

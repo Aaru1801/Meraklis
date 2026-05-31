@@ -8,9 +8,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // The app's FastAPI backend runs on :8088; the local model server (NIM /
-      // vLLM / TRT-LLM) owns :8000 per MODEL_BASE_URL, so the two never collide.
-      "/api": { target: "http://127.0.0.1:8088", changeOrigin: true },
+      // Dev frontend proxies /api to the REAL GX10 backend (GB10 + Nemotron) over
+      // Tailscale by default, so `npm run dev` exercises the live local models —
+      // not a deterministic fallback. Override for a purely-local backend with:
+      //   MERAKLIS_API=http://127.0.0.1:8088 npm run dev
+      "/api": { target: process.env.MERAKLIS_API || "http://gx10-d8fb:8088", changeOrigin: true },
     },
   },
   build: { outDir: "dist" },

@@ -6,49 +6,49 @@
   --sans: 'Public Sans', system-ui, -apple-system, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  /* base surfaces — warm-cool near-black, green-tinted */
-  --bg:        #090c09;
-  --surface:   #0f130e;
-  --surface-2: #151b13;
-  --surface-3: #1c2419;
-  --border:    #232c1e;
-  --border-2:  #313d29;
-  --border-3:  #44543a;
+  /* base surfaces — white / cool grey, professional (light theme) */
+  --bg:        #f3f4f6;
+  --surface:   #ffffff;
+  --surface-2: #f1f3f5;
+  --surface-3: #e6e9ed;
+  --border:    #e4e7eb;
+  --border-2:  #d6dade;
+  --border-3:  #c2c8cf;
 
-  /* text — warm off-white */
-  --text:      #e9efe3;
-  --dim:       #9aa78f;
-  --faint:     #6b7860;
-  --ghost:     #47513e;
+  /* text — near-black on light */
+  --text:      #1b1f24;
+  --dim:       #59616b;
+  --faint:     #868e98;
+  --ghost:     #aab0b8;
 
-  /* NVIDIA green — the primary accent */
-  --green:     #76b900;
-  --green-2:   #8ed600;
-  --green-deep:#5b8f00;
-  --green-ink: #0a1400;
-  --green-bg:  #15200a;
-  --green-glow: 0 0 0 1px rgba(118,185,0,.35), 0 0 22px -6px rgba(118,185,0,.5);
+  /* single restrained accent (muted NVIDIA green) — used sparingly, vital actions only */
+  --green:     #4d8a26;
+  --green-2:   #437a1f;
+  --green-deep:#3a6a1b;
+  --green-ink: #ffffff;
+  --green-bg:  #ecf4e3;
+  --green-glow: none;
 
-  /* risk ramp — amber→red, deliberately NOT green so grades never read "good=brand" */
-  --r-low:  #76b900;
-  --r-mod:  #d6c12a;
-  --r-elev: #e08a2e;
-  --r-high: #e2563a;
-  --r-low-bg:  rgba(118,185,0,.13);
-  --r-mod-bg:  rgba(214,193,42,.13);
-  --r-elev-bg: rgba(224,138,46,.14);
-  --r-high-bg: rgba(226,86,58,.14);
+  /* risk ramp — flat solid tints on white; semantic, not decorative */
+  --r-low:  #4d8a26;
+  --r-mod:  #b8901a;
+  --r-elev: #cf7327;
+  --r-high: #cc3f2e;
+  --r-low-bg:  #ecf4e3;
+  --r-mod-bg:  #f6edcf;
+  --r-elev-bg: #fbe7d6;
+  --r-high-bg: #fbddd8;
 
-  /* event-type accents in the trace */
-  --c-tool:  #5bb3c9;
+  /* event-type accents in the trace (muted) */
+  --c-tool:  #3a7d91;
   --c-model: var(--green);
-  --c-fall:  #b59adf;
-  --c-check: #d6c12a;
-  --c-human: #e08a2e;
+  --c-fall:  #7a5ea8;
+  --c-check: #b8901a;
+  --c-human: #cf7327;
 
   --r-sm: 5px; --r: 8px; --r-lg: 12px; --r-xl: 18px;
-  --shadow: 0 6px 24px -8px rgba(0,0,0,.6), 0 2px 6px -2px rgba(0,0,0,.5);
-  --shadow-lg: 0 28px 70px -18px rgba(0,0,0,.75);
+  --shadow: 0 1px 3px rgba(20,24,28,.08), 0 6px 18px -6px rgba(20,24,28,.12);
+  --shadow-lg: 0 14px 36px -10px rgba(20,24,28,.20);
   --ease: cubic-bezier(.2,.7,.3,1);
 }
 
@@ -67,7 +67,7 @@ body {
 button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 input, textarea, select { font-family: inherit; font-size: inherit; color: inherit; }
 a { color: inherit; text-decoration: none; }
-::selection { background: rgba(118,185,0,.28); }
+::selection { background: rgba(77,138,38,.20); }
 
 /* scrollbars */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -96,22 +96,23 @@ a { color: inherit; text-decoration: none; }
 .btn { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px;
   padding: 9px 15px; border-radius: var(--r); transition: all .15s var(--ease); white-space: nowrap; }
 .btn-pri { background: var(--green); color: var(--green-ink); }
-.btn-pri:hover { background: var(--green-2); box-shadow: var(--green-glow); }
-.btn-ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--border-2); }
-.btn-ghost:hover { border-color: var(--border-3); background: var(--surface-3); }
-.btn-quiet { background: transparent; color: var(--dim); border: 1px solid transparent; }
+.btn-pri:hover { background: var(--green-2); }
+.btn-ghost { background: var(--surface-2); color: var(--text); }
+.btn-ghost:hover { background: var(--surface-3); }
+.btn-quiet { background: transparent; color: var(--dim); }
 .btn-quiet:hover { color: var(--text); background: var(--surface-2); }
 .btn-sm { padding: 6px 11px; font-size: 12px; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ---- pills / chips ---- */
+/* flat solid label chip (Metro-style) — never an outline ring, never looks clickable */
 .pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px;
-  letter-spacing: .05em; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--border-2); color: var(--dim); }
+  letter-spacing: .05em; padding: 3px 8px; border-radius: 3px; background: var(--surface-2); color: var(--dim); }
 
 /* ---- dots ---- */
 .dot { width: 7px; height: 7px; border-radius: 99px; flex-shrink: 0; }
-.dot-live { background: var(--green); box-shadow: 0 0 0 0 rgba(118,185,0,.5); animation: ping 1.6s var(--ease) infinite; }
-@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(118,185,0,.5); } 70% { box-shadow: 0 0 0 6px rgba(118,185,0,0); } 100% { box-shadow: 0 0 0 0 rgba(118,185,0,0); } }
+.dot-live { background: var(--green); }
+@keyframes ping { 0%, 100% { opacity: 1; } }
 
 /* ---- animations ---- */
 @keyframes blink { 50% { opacity: .25; } }
@@ -128,7 +129,7 @@ a { color: inherit; text-decoration: none; }
 
 /* ---- grid texture for placeholders ---- */
 .grid-tex {
-  background-image: linear-gradient(rgba(118,185,0,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(118,185,0,.05) 1px, transparent 1px);
+  background-image: linear-gradient(rgba(20,24,28,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(20,24,28,.04) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 
@@ -142,7 +143,7 @@ a { color: inherit; text-decoration: none; }
 
 /* layout helpers */
 /* ---- Leaflet dark theme (imported OpenHome map) ---- */
-.leaflet-container { background: #05070a; font-family: var(--sans); }
+.leaflet-container { background: #e6e9ed; font-family: var(--sans); }
 .leaflet-control-zoom { border: 1px solid var(--border-2) !important; box-shadow: var(--shadow) !important; overflow: hidden; border-radius: 8px; }
 .leaflet-control-zoom a { background: var(--surface-2); color: var(--text); border-bottom-color: var(--border) !important; width: 30px; height: 30px; line-height: 30px; font-size: 17px; }
 .leaflet-control-zoom a:hover { background: var(--surface-3); color: var(--green); }

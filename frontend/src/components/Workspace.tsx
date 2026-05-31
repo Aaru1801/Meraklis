@@ -48,7 +48,7 @@ function NavBtn({ n, active, running, onClick }: { n: typeof NAV[number]; active
 
 export function Workspace({
   address, data, stages, traceByIndex, runningIndex, runtime, online, setOnline,
-  section, setSection, approval, setApproval, onHome, onRerun,
+  section, setSection, approval, setApproval, onHome, onRerun, language, onLanguage,
 }: {
   address: string;
   data: LiveData;
@@ -64,6 +64,8 @@ export function Workspace({
   setApproval: (s: string) => void;
   onHome: () => void;
   onRerun: () => void;
+  language: string;
+  onLanguage: (lang: string) => void;
 }) {
   const [railOpen, setRailOpen] = useState(true);
   const running = runningIndex !== null;
@@ -83,7 +85,7 @@ export function Workspace({
       case "operator": return data.operator ? <OperatorPanel operator={data.operator} /> : <Waiting label="checking operator…" />;
       case "safety": return data.safety ? <SafetyPanel safety={data.safety} /> : <Waiting label="reading neighbourhood safety…" />;
       case "rights": return data.rights ? <RightsPanel rights={data.rights} /> : <Waiting label="grounding rights…" />;
-      case "advocate": return data.advocacy ? <AdvocateSection advocacy={data.advocacy} /> : <Waiting label="drafting guidance…" />;
+      case "advocate": return data.advocacy ? <AdvocateSection advocacy={data.advocacy} language={language} onLanguage={onLanguage} /> : <Waiting label="drafting guidance…" />;
       case "draft": return data.draft_311 ? <DraftPanel draft={data.draft_311} approval={approval} onApprove={() => setApproval("approved")} onRequestChanges={() => setApproval("pending")} /> : <Waiting label="preparing 311 draft…" />;
       case "audit": return <AuditPanel audit={data.audit_trail} approval={approval} />;
       default: return null;

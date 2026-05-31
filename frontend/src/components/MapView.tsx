@@ -31,10 +31,10 @@ export function MapView({ buildings, minScore, includeUnknown, demoRsns, mostSev
     <MapContainer
       center={[43.70, -79.38]} zoom={11} minZoom={9} maxZoom={18}
       preferCanvas zoomControl={false} attributionControl={false}
-      style={{ height: "100%", width: "100%", background: "#05070a" }}
+      style={{ height: "100%", width: "100%", background: "#e6e9ed" }}
     >
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+        url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
         subdomains="abcd" maxZoom={20}
       />
       <ZoomControl position="bottomright" />
