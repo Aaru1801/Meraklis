@@ -36,6 +36,7 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
   const [locating, setLocating] = useState(false);
   const [geoErr, setGeoErr] = useState(false);
   const [p, setP] = useState(0);
+  const [focused, setFocused] = useState(false);
 
   const onScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -56,6 +57,16 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
   const near = useMemo(() => (me ? nearest(buildings, me.lat, me.lng, 8) : []), [me, buildings]);
   const nearRsns = useMemo(() => new Set(near.map((x) => x.b.rsn)), [near]);
   const flaggedNear = useMemo(() => nearestFlagged(near), [near]);
+  // address autocomplete: match the typed text against loaded building addresses
+  // (prefix matches first — typing "500" surfaces "500 …" — then contains).
+  const suggestions = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term) return [] as CityBuilding[];
+    const withAddr = buildings.filter((b) => b.address);
+    const starts = withAddr.filter((b) => b.address.toLowerCase().startsWith(term));
+    const contains = withAddr.filter((b) => { const a = b.address.toLowerCase(); return !a.startsWith(term) && a.includes(term); });
+    return [...starts, ...contains].slice(0, 8);
+  }, [q, buildings]);
   const locate = useCallback(() => {
     if (!navigator.geolocation) { setGeoErr(true); return; }
     setLocating(true); setGeoErr(false);
@@ -94,6 +105,10 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
       <div className="row" style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 6, justifyContent: "space-between", padding: "16px 22px", gap: 16, pointerEvents: "none" }}>
         <div style={{ pointerEvents: "auto" }}><Logo /></div>
         <div className="row gap10" style={{ pointerEvents: "auto" }}>
+          <button onClick={() => { window.location.hash = "#rights"; }} className="row gap6"
+            style={{ padding: "5px 11px", borderRadius: 6, background: "var(--surface-2)", fontSize: 12, fontWeight: 600, color: "var(--text)" }}>
+            <Icon name="scale" size={13} color="var(--green)" /> Know your rights
+          </button>
           <span className="row gap6"><span className="dot dot-live" /><span className="mono" style={{ fontSize: 11, color: "var(--green)" }}>{runtime?.model_name ?? "local model"}</span></span>
         </div>
       </div>
@@ -105,12 +120,28 @@ export function CityLanding({ buildings, demos, runtime, onPick, profile, setPro
             <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", lineHeight: 1.15 }}>Check any Toronto building before you sign</h1>
             <p className="dim" style={{ fontSize: 14 }}>Real City inspection data, scored locally on your NVIDIA edge.</p>
           </div>
-          <div className="panel row gap10" style={{ width: "100%", padding: "6px 6px 6px 16px", borderColor: "var(--border-2)", boxShadow: "var(--shadow-lg)", background: "var(--surface)" }}>
-            <Icon name="search" size={18} color="var(--faint)" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a Toronto building address…"
-              onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) onPick({ address: q.trim() }); }}
-              style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 16, padding: "11px 0" }} />
-            <button className="btn btn-pri" onClick={() => q.trim() && onPick({ address: q.trim() })}><Icon name="scan-search" size={15} /> Investigate</button>
+          <div style={{ position: "relative", width: "100%" }}>
+            <div className="panel row gap10" style={{ width: "100%", padding: "6px 6px 6px 16px", borderColor: "var(--border-2)", boxShadow: "var(--shadow-lg)", background: "var(--surface)" }}>
+              <Icon name="search" size={18} color="var(--faint)" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a Toronto building address…"
+                onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 120)}
+                onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) onPick({ address: q.trim() }); }}
+                style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 16, padding: "11px 0" }} />
+              <button className="btn btn-pri" onClick={() => q.trim() && onPick({ address: q.trim() })}><Icon name="scan-search" size={15} /> Investigate</button>
+            </div>
+            {focused && suggestions.length > 0 && (
+              <div className="panel" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 12, padding: 6, maxHeight: 300, overflowY: "auto", background: "var(--surface)", boxShadow: "var(--shadow-lg)" }}>
+                {suggestions.map((b) => (
+                  <button key={b.rsn} onMouseDown={() => onPick({ address: b.address, rsn: b.rsn })} className="row gap8 sug-row"
+                    style={{ width: "100%", padding: "9px 10px", borderRadius: 6, background: "transparent", color: "var(--text)" }}>
+                    <Icon name="map-pin" size={13} color="var(--faint)" />
+                    <span className="grow" style={{ fontSize: 13.5, textAlign: "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.address}</span>
+                    {b.ward && <span className="faint" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{b.ward}</span>}
+                    {b.score != null && <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: BAND_COLOR[b.risk_level || "Unknown"] }}>{b.score}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="row gap6 wrap" style={{ justifyContent: "center" }}>
             {demos.slice(0, 4).map((d) => (

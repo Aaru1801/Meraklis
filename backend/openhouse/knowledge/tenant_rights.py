@@ -198,12 +198,14 @@ _CATEGORY_TOPICS: dict[str, tuple[str, ...]] = {
     "CLEANING LOG": ("records",),
     "STATE OF GOOD REPAIR PLAN": ("repairs", "records"),
     "MAIL RECEPTACLES": ("security",),
+    "EXTERIOR GROUNDS": ("repairs",),
 }
 _GROUP_TOPICS: dict[str, tuple[str, ...]] = {
     "Security & Safety": ("security",),
     "Pests & Sanitation": ("pests",),
     "Essential Services & Records": ("records", "repairs"),
     "Building Integrity": ("repairs",),
+    "Exterior & Grounds": ("repairs",),
 }
 
 
@@ -275,11 +277,16 @@ def topics_for(report: RiskReport) -> list[str]:
             keys = _GROUP_TOPICS[flag.group]
         elif flag.code == "derived:reactive":
             keys = ("repairs",)
-        elif flag.code == "derived:records":
+        elif flag.code in ("derived:records", "derived:obstructed"):
             keys = ("records", "repairs")
         for k in keys:
             if k not in topics:
                 topics.append(k)
+    # Fallback: any building with deficiencies still has the landlord's core repair
+    # and records/transparency obligations — never leave a flagged building with no
+    # grounded rights just because its categories aren't individually mapped.
+    if not topics and report.red_flags:
+        topics = ["repairs", "records"]
     return topics
 
 

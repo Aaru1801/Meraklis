@@ -477,6 +477,19 @@ export type EdgeEvent =
   | { type: "result"; data: EdgeInvestigationResponse }
   | { type: "error"; message: string };
 
+export interface RightsCitation { title: string; legal_basis: string; source: string; }
+export interface RightsResource { name: string; what: string; contact: string; url: string; }
+export interface RightsResponse {
+  ok: boolean;
+  answer: string;
+  out_of_scope: boolean;
+  citations: RightsCitation[];
+  resources: RightsResource[];
+  disclaimer: string;
+  model: string;
+  error: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -561,6 +574,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: body(input),
     });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  },
+  askRights: async (question: string): Promise<RightsResponse> => {
+    const res = await fetch("/api/rights/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
   },

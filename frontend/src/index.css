@@ -105,6 +105,9 @@ a { color: inherit; text-decoration: none; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ---- pills / chips ---- */
+/* search autocomplete row hover */
+.sug-row:hover { background: var(--surface-2); }
+
 /* flat solid label chip (Metro-style) — never an outline ring, never looks clickable */
 .pill { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px;
   letter-spacing: .05em; padding: 3px 8px; border-radius: 3px; background: var(--surface-2); color: var(--dim); }

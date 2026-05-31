@@ -39,6 +39,7 @@ from ..agents.service import get_service
 from ..data import conditions
 from ..data.adapters.base import AddressQuery
 from ..data.pio import get_pio_builder
+from ..knowledge.tenant_rights import DISCLAIMER, RESOURCES, RIGHTS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("openhouse.api")
@@ -404,6 +405,130 @@ async def submit_condition(rsn: str, file: UploadFile = File(...)) -> ConditionU
     return ConditionUploadResult(
         ok=True, model=adapter.vision_model, analysis=analysis, delta=delta,
         recorded=recorded, summary=ConditionSummary(**summary),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tenant-rights assistant — grounded Q&A over the verified rights knowledge base.
+# The model only ever sees this knowledge + the question, must cite the rights it
+# used, and flags out-of-scope questions instead of inventing law.
+# ---------------------------------------------------------------------------
+def _rights_kb() -> str:
+    lines = ["TENANT-RIGHTS KNOWLEDGE (Ontario / Toronto) — the ONLY source you may use:"]
+    for r in RIGHTS.values():
+        lines.append(f"\n### {r.title}")
+        lines.append(r.right)
+        lines.append(f"Legal basis: {r.legal_basis}")
+        lines.append(f"Source: {r.source}")
+        lines.append("What you can do: " + " ".join(f"({i + 1}) {s}" for i, s in enumerate(r.what_you_can_do)))
+        lines.append(f"Escalation: {r.escalation}")
+    lines.append("\nRESOURCES (point to these by exact name when helpful):")
+    for res in RESOURCES:
+        lines.append(f"- {res.name}: {res.what} [{res.contact}]")
+    return "\n".join(lines)
+
+
+_RIGHTS_KB = _rights_kb()
+_RIGHTS_BY_TITLE = {r.title: r for r in RIGHTS.values()}
+_RES_BY_NAME = {res.name: res for res in RESOURCES}
+_RIGHT_TITLES = "; ".join(_RIGHTS_BY_TITLE.keys())
+
+
+class RightsQuery(BaseModel):
+    question: str
+
+
+class RightsAnswerOut(BaseModel):
+    answer: str = ""
+    cited_rights: list[str] = []
+    suggested_resources: list[str] = []
+    out_of_scope: bool = False
+
+
+class RightsCitation(BaseModel):
+    title: str
+    legal_basis: str
+    source: str
+
+
+class RightsResourceOut(BaseModel):
+    name: str
+    what: str
+    contact: str
+    url: str
+
+
+class RightsResponse(BaseModel):
+    ok: bool
+    answer: str = ""
+    out_of_scope: bool = False
+    citations: list[RightsCitation] = []
+    resources: list[RightsResourceOut] = []
+    disclaimer: str = ""
+    model: str = ""
+    error: str | None = None
+
+
+@app.post("/api/rights/ask")
+async def rights_ask(body: RightsQuery) -> RightsResponse:
+    """Answer a tenant question grounded ONLY in the verified rights knowledge base."""
+    question = (body.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Empty question.")
+    adapter = get_model_adapter()
+    out, call = await adapter.generate_json(
+        agent="Rights Assistant",
+        response_model=RightsAnswerOut,
+        max_tokens=700,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are Meraklis's tenant-rights assistant for Ontario / Toronto renters. "
+                    "Answer ONLY using the tenant-rights knowledge in the user message. Never invent "
+                    "statutes, section numbers, timelines, dollar figures, or rights that are not in it. "
+                    "If the question is not covered by the knowledge, set out_of_scope=true, say briefly "
+                    "that it is outside what you can answer from the knowledge base, and point to a "
+                    "resource. This is general information, not legal advice. Return valid JSON only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{_RIGHTS_KB}\n\nTENANT QUESTION: {question}\n\n"
+                    f"The rights are titled exactly: {_RIGHT_TITLES}.\n"
+                    'Return JSON: {"answer": "plain-language answer (2-5 sentences) grounded only in the '
+                    'knowledge above", "cited_rights": ["copy verbatim the exact title(s) your answer relied on"], '
+                    '"suggested_resources": ["exact resource names, if helpful"], "out_of_scope": false}'
+                ),
+            },
+        ],
+    )
+    if out is None:
+        return RightsResponse(
+            ok=False, model=adapter.model_name, disclaimer=DISCLAIMER,
+            error="The local model is unavailable right now — please try again shortly.",
+        )
+    citations: list[RightsCitation] = []
+    seen: set[str] = set()
+    for t in out.cited_rights:
+        ql = t.strip().lower()
+        for title, r in _RIGHTS_BY_TITLE.items():
+            tl = title.lower()
+            if (ql == tl or ql in tl or tl in ql) and r.title not in seen:
+                citations.append(RightsCitation(title=r.title, legal_basis=r.legal_basis, source=r.source))
+                seen.add(r.title)
+                break
+    resources = [
+        RightsResourceOut(name=n, what=_RES_BY_NAME[n].what, contact=_RES_BY_NAME[n].contact, url=_RES_BY_NAME[n].url)
+        for n in out.suggested_resources if n in _RES_BY_NAME
+    ]
+    if out.out_of_scope and not resources:
+        resources = [RightsResourceOut(name=r.name, what=r.what, contact=r.contact, url=r.url) for r in RESOURCES[:2]]
+    return RightsResponse(
+        ok=True, answer=out.answer, out_of_scope=out.out_of_scope,
+        citations=citations, resources=resources, disclaimer=DISCLAIMER, model=call.model,
     )
 
 

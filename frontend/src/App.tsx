@@ -8,6 +8,7 @@ import { CityLanding } from "./components/CityLanding";
 import { Workspace, type LiveData } from "./components/Workspace";
 import { SourceDrawer } from "./components/SourceDrawer";
 import { Team } from "./components/Team";
+import { RightsChat } from "./components/RightsChat";
 import type { AuditStep, CityBuilding, PipelineStage, UserProfile } from "./api";
 
 const EMPTY: LiveData = { audit_trail: [] };
@@ -134,6 +135,7 @@ export default function App() {
   const ctxValue = useMemo(() => ({ map: evidenceMap, open: (id: string) => setSourceId(id) }), [evidenceMap]);
 
   if (route === "#team") return <Team />;
+  if (route === "#rights") return <RightsChat onHome={() => { window.location.hash = ""; }} />;
 
   return (
     <EvidenceCtx.Provider value={ctxValue}>
