@@ -7,6 +7,7 @@ import { type DemoCard } from "./components/SearchScreen";
 import { CityLanding } from "./components/CityLanding";
 import { Workspace, type LiveData } from "./components/Workspace";
 import { SourceDrawer } from "./components/SourceDrawer";
+import { Team } from "./components/Team";
 import type { AuditStep, CityBuilding, PipelineStage, UserProfile } from "./api";
 
 const EMPTY: LiveData = { audit_trail: [] };
@@ -39,6 +40,7 @@ export default function App() {
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile>(loadProfile);
   const profileRef = useRef(profile);
+  const [route, setRoute] = useState(() => window.location.hash);
 
   useEffect(() => {
     profileRef.current = profile;
@@ -117,6 +119,11 @@ export default function App() {
   }, [investigate]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const evidenceMap = useMemo(() => {
     const m = new Map<string, EvidenceRef>();
@@ -125,6 +132,8 @@ export default function App() {
   }, [evidence]);
 
   const ctxValue = useMemo(() => ({ map: evidenceMap, open: (id: string) => setSourceId(id) }), [evidenceMap]);
+
+  if (route === "#team") return <Team />;
 
   return (
     <EvidenceCtx.Provider value={ctxValue}>
@@ -139,7 +148,6 @@ export default function App() {
           runningIndex={runningIndex}
           runtime={runtime}
           online={online}
-          setOnline={setOnline}
           section={section}
           setSection={setSection}
           approval={approval}

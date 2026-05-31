@@ -1,16 +1,13 @@
-import { useState } from "react";
 import type { EdgeRuntimeStatus } from "../api";
 import { Icon } from "../lib/icons";
-import { KV, Pill, Switch } from "../lib/ui";
+import { KV } from "../lib/ui";
 
-export function RuntimePanel({ runtime, online, running, fallbacks, onToggleOnline }: {
+export function RuntimePanel({ runtime, online, running, fallbacks }: {
   runtime: EdgeRuntimeStatus;
   online: boolean;
   running: boolean;
   fallbacks: number;
-  onToggleOnline: () => void;
 }) {
-  const [backend, setBackend] = useState(runtime.supported_backends[0] ?? "");
   const active = online || running;
   const statusColor = online ? "var(--green)" : "var(--r-elev)";
   const fallbackActive = !online;
@@ -80,43 +77,6 @@ export function RuntimePanel({ runtime, online, running, fallbacks, onToggleOnli
         <KV k="Fallback" v={runtime.fallback_status.includes("used") ? "active" : "armed"} />
       </div>
 
-      {/* serving backend picker */}
-      <div>
-        <div className="eyebrow" style={{ marginBottom: 7 }}>Serving backend</div>
-        <div className="row gap6 wrap">
-          {runtime.supported_backends.slice(0, 6).map((o) => {
-            const short = o.replace(/ .*/, "");
-            return (
-              <button key={o} onClick={() => setBackend(o)} className="mono" title={o}
-                style={{ fontSize: 10, padding: "5px 9px", borderRadius: 6, border: "1px solid " + (o === backend ? "var(--green)" : "var(--border-2)"), color: o === backend ? "var(--green)" : "var(--dim)", background: o === backend ? "var(--green-bg)" : "transparent" }}>
-                {short}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* trust cue */}
-      <div className="panel-2 grid-tex" style={{ padding: 13, borderColor: "var(--border-2)" }}>
-        <div className="row gap8" style={{ marginBottom: 4 }}>
-          <Icon name="lock" size={14} color="var(--green)" />
-          <span style={{ fontSize: 12, fontWeight: 700 }}>No sensitive data leaves this device</span>
-        </div>
-        <p className="dim" style={{ fontSize: 11, lineHeight: 1.45 }}>{runtime.trust_cue}</p>
-        <div className="row gap6 wrap" style={{ marginTop: 8 }}>
-          <Pill color="var(--green)"><Icon name="wifi-off" size={11} /> Air-gap ready</Pill>
-          <Pill color="var(--green)"><Icon name="hard-drive" size={11} /> On-device cache</Pill>
-        </div>
-      </div>
-
-      {/* simulate offline */}
-      <div className="row" style={{ justifyContent: "space-between", padding: "10px 12px", borderRadius: "var(--r)", border: "1px dashed var(--border-2)" }}>
-        <div className="col" style={{ gap: 1 }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600 }}>Simulate model online</span>
-          <span className="faint" style={{ fontSize: 10.5 }}>Preview the served-model state</span>
-        </div>
-        <Switch on={online} onChange={onToggleOnline} />
-      </div>
     </div>
   );
 }

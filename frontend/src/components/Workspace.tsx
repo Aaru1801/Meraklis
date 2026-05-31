@@ -47,7 +47,7 @@ function NavBtn({ n, active, running, onClick }: { n: typeof NAV[number]; active
 }
 
 export function Workspace({
-  address, data, stages, traceByIndex, runningIndex, runtime, online, setOnline,
+  address, data, stages, traceByIndex, runningIndex, runtime, online,
   section, setSection, approval, setApproval, onHome, onRerun, language, onLanguage,
 }: {
   address: string;
@@ -57,7 +57,6 @@ export function Workspace({
   runningIndex: number | null;
   runtime: EdgeRuntimeStatus | null;
   online: boolean;
-  setOnline: (fn: (v: boolean) => boolean) => void;
   section: string;
   setSection: (s: string) => void;
   approval: string;
@@ -132,7 +131,7 @@ export function Workspace({
               <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
                 <button className="btn-quiet btn btn-sm" onClick={() => setRailOpen(false)} title="Collapse runtime panel"><Icon name="panel-right-close" size={15} /></button>
               </div>
-              {runtime ? <RuntimePanel runtime={runtime} online={online} running={running} fallbacks={fallbacks} onToggleOnline={() => setOnline((v) => !v)} /> : <Waiting label="probing runtime…" />}
+              {runtime ? <RuntimePanel runtime={runtime} online={online} running={running} fallbacks={fallbacks} /> : <Waiting label="probing runtime…" />}
             </div>
           ) : (
             <button onClick={() => setRailOpen(true)} title="Show NVIDIA Edge Runtime" className="col" style={{ width: "100%", alignItems: "center", gap: 12, padding: "12px 0", height: "100%" }}>
